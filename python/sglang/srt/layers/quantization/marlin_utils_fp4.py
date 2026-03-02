@@ -93,9 +93,10 @@ def nvfp4_marlin_process_global_scale(global_scale: torch.Tensor) -> torch.Tenso
     FP4 (E2M1) and FP16/BF16 have different exponent ranges. Pre-multiplying
     the global scale avoids repeated exponent bias computation during inference.
     """
-    assert global_scale.dtype in [torch.half, torch.bfloat16], (
-        f"global_scale dtype must be half or bfloat16, got {global_scale.dtype}"
-    )
+    assert global_scale.dtype in [
+        torch.half,
+        torch.bfloat16,
+    ], f"global_scale dtype must be half or bfloat16, got {global_scale.dtype}"
     fp4_exponent = 2  # NVFP4 E2M1: 2 exponent bits
     if global_scale.dtype == torch.half:
         target_exponent = 5  # FP16: 5 exponent bits

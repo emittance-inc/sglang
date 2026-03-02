@@ -162,11 +162,11 @@ class TestNvfp4MarlinMoe(unittest.TestCase):
         from sglang.srt.layers.moe.fused_moe_triton.fused_marlin_moe import (
             fused_marlin_moe,
         )
+        from sglang.srt.layers.quantization.marlin_utils import marlin_permute_scales
         from sglang.srt.layers.quantization.marlin_utils_fp4 import (
             nvfp4_marlin_process_global_scale,
             nvfp4_marlin_process_scales,
         )
-        from sglang.srt.layers.quantization.marlin_utils import marlin_permute_scales
 
         try:
             from sglang.jit_kernel.gptq_marlin_repack import gptq_marlin_repack
@@ -254,7 +254,6 @@ class TestNvfp4MarlinMoe(unittest.TestCase):
 
     def test_prepare_moe_fp4_layer_for_marlin(self):
         """Test that prepare_moe_fp4_layer_for_marlin correctly repacks weights."""
-        from sglang.srt.layers.moe.utils import MoeRunnerBackend
         from sglang.srt.layers.quantization.marlin_utils_fp4 import (
             prepare_moe_fp4_layer_for_marlin,
         )
@@ -282,18 +281,24 @@ class TestNvfp4MarlinMoe(unittest.TestCase):
 
         # w13_weight: [E, 2*N, K//2] uint8 (gate+up proj, packed FP4)
         layer.w13_weight = torch.nn.Parameter(
-            torch.randint(0, 256, (E, 2 * N, K // 2), dtype=torch.uint8, device=self.device),
+            torch.randint(
+                0, 256, (E, 2 * N, K // 2), dtype=torch.uint8, device=self.device
+            ),
             requires_grad=False,
         )
         # w2_weight: [E, K, N//2] uint8 (down proj, packed FP4)
         layer.w2_weight = torch.nn.Parameter(
-            torch.randint(0, 256, (E, K, N // 2), dtype=torch.uint8, device=self.device),
+            torch.randint(
+                0, 256, (E, K, N // 2), dtype=torch.uint8, device=self.device
+            ),
             requires_grad=False,
         )
 
         # w13_weight_scale: [E, 2*N, K//16] float8_e4m3fn
         layer.w13_weight_scale = torch.nn.Parameter(
-            torch.ones(E, 2 * N, K // 16, dtype=torch.float8_e4m3fn, device=self.device),
+            torch.ones(
+                E, 2 * N, K // 16, dtype=torch.float8_e4m3fn, device=self.device
+            ),
             requires_grad=False,
         )
         # w2_weight_scale: [E, K, N//16] float8_e4m3fn
@@ -322,9 +327,7 @@ class TestNvfp4MarlinMoe(unittest.TestCase):
         # Verify global scales were processed
         self.assertEqual(layer.w13_weight_scale_2.shape, (E,))
         self.assertEqual(layer.w2_weight_scale_2.shape, (E,))
-        logger.debug(
-            f"prepare_moe_fp4_layer_for_marlin: E={E}, K={K}, N={N} ✓"
-        )
+        logger.debug(f"prepare_moe_fp4_layer_for_marlin: E={E}, K={K}, N={N} ✓")
 
 
 class TestFp4MarlinSupport(unittest.TestCase):
@@ -365,7 +368,9 @@ if __name__ == "__main__":
         sys.exit(0)
 
     if sm >= 100:
-        print(f"Note: SM{sm} has native FP4 support. Testing Marlin fallback paths anyway.")
+        print(
+            f"Note: SM{sm} has native FP4 support. Testing Marlin fallback paths anyway."
+        )
     else:
         print(f"SM{sm}: Testing Marlin FP4 fallback (non-Blackwell GPU).")
 
