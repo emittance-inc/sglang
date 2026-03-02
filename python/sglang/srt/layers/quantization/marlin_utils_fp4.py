@@ -154,7 +154,7 @@ def apply_fp4_marlin_linear(
         c=None,
         b_q_weight=weight,
         b_scales=weight_scale,
-        global_scale=weight_global_scale,
+        global_scale=weight_global_scale.reshape(-1),
         b_zeros=None,
         g_idx=None,
         perm=None,
@@ -365,9 +365,13 @@ def prepare_moe_fp4_layer_for_marlin(layer: torch.nn.Module) -> None:
         if global_scale.dim() > 1:
             global_scale = global_scale.max(dim=-1).values  # [E, 2] -> [E]
 
-        processed_global = nvfp4_marlin_process_global_scale(global_scale)
+        # MoE kernel (moe_wna16_marlin_gemm) applies global_scale as a direct
+        # POST-GEMM multiplier (res = __hmul2(res, global_scale)), NOT via the
+        # internal FP4 dequant bit-manipulation used by the linear kernel.
+        # Pass the raw BF16/FP16 scale directly — do NOT call
+        # nvfp4_marlin_process_global_scale here.
         setattr(
             layer,
             name + "_weight_scale_2",
-            torch.nn.Parameter(processed_global, requires_grad=False),
+            torch.nn.Parameter(global_scale, requires_grad=False),
         )

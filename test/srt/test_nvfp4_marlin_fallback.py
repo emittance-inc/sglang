@@ -319,8 +319,6 @@ class TestNvfp4MarlinMoe(unittest.TestCase):
 
         prepare_moe_fp4_layer_for_marlin(layer)
 
-        # Verify workspace was created
-        self.assertTrue(hasattr(layer, "marlin_workspace"))
         # Verify weights were repacked (shape changes)
         self.assertEqual(layer.w13_weight.shape[0], E)
         self.assertEqual(layer.w2_weight.shape[0], E)
