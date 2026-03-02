@@ -164,7 +164,6 @@ class TestNvfp4MarlinMoe(unittest.TestCase):
         )
         from sglang.srt.layers.quantization.marlin_utils import marlin_permute_scales
         from sglang.srt.layers.quantization.marlin_utils_fp4 import (
-            nvfp4_marlin_process_global_scale,
             nvfp4_marlin_process_scales,
         )
 
@@ -200,8 +199,9 @@ class TestNvfp4MarlinMoe(unittest.TestCase):
             return nvfp4_marlin_process_scales(permuted)
 
         def _make_global_scale():
-            gs = torch.tensor(1.0, dtype=self.dtype, device=self.device)
-            return nvfp4_marlin_process_global_scale(gs)
+            # MoE kernel applies global_scale as a direct POST-GEMM multiplier,
+            # not via internal FP4 dequant. Pass raw BF16/FP16 scale directly.
+            return torch.tensor(1.0, dtype=self.dtype, device=self.device)
 
         # Build w1 (gate+up proj): [E, K//16, 4*N]
         w1_list = [_make_marlin_weight(K, 2 * N) for _ in range(E)]
