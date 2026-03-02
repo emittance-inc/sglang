@@ -105,6 +105,10 @@ def nvfp4_marlin_process_global_scale(global_scale: torch.Tensor) -> torch.Tenso
     # exponent_bias_fp16 = 2^4 - 2^1 = 14
     # exponent_bias_bf16 = 2^7 - 2^1 = 126
     exponent_bias = 2 ** (target_exponent - 1) - 2 ** (fp4_exponent - 1)
+    # Subtract 7 because nvfp4_marlin_process_scales multiplies FP8 scales by
+    # 2**7 (to shift the exponent into the FP8-S0E5M3 encoding expected by the
+    # Marlin dequantization kernel).  Pre-dividing the global scale by 2**7
+    # here cancels that factor so the combined scale is numerically correct.
     return global_scale * (2.0 ** (exponent_bias - 7))
 
 

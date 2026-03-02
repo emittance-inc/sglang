@@ -24,8 +24,9 @@ def get_scalar_type(num_bits: int, has_zp: bool):
 
 
 def _get_fp4_scalar_type():
-    from sgl_kernel.scalar_type import scalar_types
+    from sglang.srt.layers.quantization.utils import get_scalar_types
 
+    _, scalar_types = get_scalar_types()
     return scalar_types.float4_e2m1f
 
 
