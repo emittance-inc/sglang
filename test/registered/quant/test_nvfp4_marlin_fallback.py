@@ -13,7 +13,7 @@ import torch
 from sglang.test.ci.ci_register import register_cuda_ci
 from sglang.test.test_utils import CustomTestCase
 
-register_cuda_ci(est_time=1200, suite="stage-b-test-large-1-gpu")
+register_cuda_ci(est_time=1500, suite="stage-b-test-large-1-gpu")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
