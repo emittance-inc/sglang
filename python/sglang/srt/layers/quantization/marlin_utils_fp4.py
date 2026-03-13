@@ -222,6 +222,7 @@ def prepare_fp4_layer_for_marlin(
     # Weights stay in FP4 packed format; only tile organization changes.
     perm = torch.empty(0, dtype=torch.int, device=device)
     qweight = weight.data.view(torch.int32).T.contiguous()
+    del weight
     marlin_qweight = gptq_marlin_repack(
         b_q_weight=qweight,
         perm=perm,
@@ -229,6 +230,7 @@ def prepare_fp4_layer_for_marlin(
         size_n=part_size_n,
         num_bits=4,
     )
+    del qweight
     setattr(layer, weight_attr, torch.nn.Parameter(marlin_qweight, requires_grad=False))
 
     # WEIGHT SCALES: Transpose, permute, convert to FP8-S0E5M3 format
@@ -326,7 +328,9 @@ def prepare_moe_fp4_layer_for_marlin(layer: torch.nn.Module) -> None:
             )
             tensor_list.append(marlin_qweight)
 
+        del weight
         packed = torch.cat([x.unsqueeze(0) for x in tensor_list], 0)
+        del tensor_list
         setattr(layer, name, torch.nn.Parameter(packed, requires_grad=False))
 
     # --- WEIGHT SCALE PROCESSING ---
@@ -357,7 +361,9 @@ def prepare_moe_fp4_layer_for_marlin(layer: torch.nn.Module) -> None:
             marlin_scales = nvfp4_marlin_process_scales(marlin_scales)
             tensor_list.append(marlin_scales)
 
+        del scales
         processed_scales = torch.cat([x.unsqueeze(0) for x in tensor_list], 0)
+        del tensor_list
         setattr(
             layer,
             name + "_weight_scale",
