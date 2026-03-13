@@ -369,11 +369,13 @@ def prepare_moe_fp4_layer_for_marlin(layer: torch.nn.Module) -> None:
         if global_scale.dim() > 1:
             global_scale = global_scale.max(dim=-1).values  # [E, 2] -> [E]
 
-        # MoE kernel (moe_wna16_marlin_gemm) applies global_scale as a direct
-        # POST-GEMM multiplier (res = __hmul2(res, global_scale)), NOT via the
-        # internal FP4 dequant bit-manipulation used by the linear kernel.
-        # Pass the raw BF16/FP16 scale directly — do NOT call
-        # nvfp4_marlin_process_global_scale here.
+        # Apply the same exponent bias compensation used by the linear kernel.
+        # Both linear and MoE Marlin kernels apply global_scale identically
+        # via __hmul2(res, global_scale) post-GEMM, and both use
+        # nvfp4_marlin_process_scales (which embeds a 2^7 factor) for
+        # per-group scales. The global scale must compensate for that factor
+        # plus the FP4 <-> FP16/BF16 exponent bias difference.
+        global_scale = nvfp4_marlin_process_global_scale(global_scale)
         setattr(
             layer,
             name + "_weight_scale_2",

@@ -23,6 +23,7 @@ from sglang.srt.layers.moe import (
     get_moe_runner_backend,
 )
 from sglang.srt.layers.moe.cutlass_moe_params import CutlassMoEParams, CutlassMoEType
+from sglang.srt.layers.moe.moe_runner.marlin import MarlinMoeQuantInfo
 from sglang.srt.layers.moe.moe_runner.triton import TritonMoeQuantInfo
 from sglang.srt.layers.moe.utils import should_use_flashinfer_cutlass_moe_fp4_allgather
 from sglang.srt.layers.parameter import ModelWeightParameter, PerTensorScaleParameter
@@ -40,6 +41,12 @@ from sglang.srt.layers.quantization.fp8_utils import (
     is_blackwell_supported,
 )
 from sglang.srt.layers.quantization.kv_cache import BaseKVCacheMethod
+from sglang.srt.layers.quantization.marlin_utils_fp4 import (
+    apply_fp4_marlin_linear,
+    is_fp4_marlin_supported,
+    prepare_fp4_layer_for_marlin,
+    prepare_moe_fp4_layer_for_marlin,
+)
 from sglang.srt.layers.quantization.unquant import UnquantizedLinearMethod
 from sglang.srt.layers.quantization.utils import (
     convert_to_channelwise,
@@ -1180,11 +1187,6 @@ class ModelOptFp4LinearMethod(LinearMethodBase):
         layer.register_parameter("weight_scale", weight_scale)
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
-        from sglang.srt.layers.quantization.marlin_utils_fp4 import (
-            is_fp4_marlin_supported,
-            prepare_fp4_layer_for_marlin,
-        )
-
         if not is_blackwell_supported() and is_fp4_marlin_supported():
             # Marlin FP4 fallback: consolidate global scale then repack weights
             weight_scale_2 = layer.weight_scale_2.max().to(torch.float32)
@@ -1299,10 +1301,6 @@ class ModelOptFp4LinearMethod(LinearMethodBase):
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if getattr(layer, "use_marlin_fallback", False):
-            from sglang.srt.layers.quantization.marlin_utils_fp4 import (
-                apply_fp4_marlin_linear,
-            )
-
             return apply_fp4_marlin_linear(
                 input=x,
                 weight=layer.weight,
@@ -1368,10 +1366,6 @@ class ModelOptNvFp4FusedMoEMethod(FusedMoEMethodBase):
     def __init__(self, quant_config: ModelOptFp4Config):
         self.quant_config = quant_config
         if not is_blackwell_supported():
-            from sglang.srt.layers.quantization.marlin_utils_fp4 import (
-                is_fp4_marlin_supported,
-            )
-
             if not is_fp4_marlin_supported():
                 raise ValueError(
                     "Current platform does not support NVFP4"
@@ -1542,10 +1536,6 @@ class ModelOptNvFp4FusedMoEMethod(FusedMoEMethodBase):
         Only supports pre-quantized checkpoints with FP8 weights and scales.
         """
         if self.use_marlin_fallback:
-            from sglang.srt.layers.quantization.marlin_utils_fp4 import (
-                prepare_moe_fp4_layer_for_marlin,
-            )
-
             prepare_moe_fp4_layer_for_marlin(layer)
             return
 
@@ -1787,8 +1777,6 @@ class ModelOptNvFp4FusedMoEMethod(FusedMoEMethodBase):
 
         # Marlin FP4 fallback path for non-Blackwell GPUs (SM75-SM89)
         if self.use_marlin_fallback:
-            from sglang.srt.layers.moe.moe_runner.marlin import MarlinMoeQuantInfo
-
             expert_map = None
             global_num_experts = -1
             if hasattr(layer, "dispatcher") and hasattr(

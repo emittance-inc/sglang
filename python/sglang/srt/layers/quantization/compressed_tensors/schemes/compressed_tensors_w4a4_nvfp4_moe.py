@@ -12,11 +12,18 @@ from sglang.srt.distributed.device_communicators.pynccl_allocator import (
 from sglang.srt.layers.dp_attention import is_allocation_symmetric
 from sglang.srt.layers.moe import MoeRunner, MoeRunnerBackend, MoeRunnerConfig
 from sglang.srt.layers.moe.cutlass_moe_params import CutlassMoEParams, CutlassMoEType
+from sglang.srt.layers.moe.fused_moe_triton import FusedMoeWeightScaleSupported
+from sglang.srt.layers.moe.moe_runner.marlin import MarlinMoeQuantInfo
+from sglang.srt.layers.moe.token_dispatcher import StandardCombineInput
 from sglang.srt.layers.moe.utils import RoutingMethodType, get_moe_runner_backend
 from sglang.srt.layers.quantization.compressed_tensors.schemes import (
     CompressedTensorsMoEScheme,
 )
 from sglang.srt.layers.quantization.fp8_utils import is_blackwell_supported
+from sglang.srt.layers.quantization.marlin_utils_fp4 import (
+    is_fp4_marlin_supported,
+    prepare_moe_fp4_layer_for_marlin,
+)
 from sglang.srt.layers.quantization.utils import (
     prepare_static_weights_for_trtllm_fp4_moe,
     reorder_w1w3_to_w3w1,
@@ -40,10 +47,6 @@ class CompressedTensorsW4A4Nvfp4MoE(CompressedTensorsMoEScheme):
     def __init__(self):
         self.group_size = 16
         if not is_blackwell_supported():
-            from sglang.srt.layers.quantization.marlin_utils_fp4 import (
-                is_fp4_marlin_supported,
-            )
-
             if not is_fp4_marlin_supported():
                 raise ValueError(
                     "Current platform does not support NVFP4"
@@ -72,8 +75,6 @@ class CompressedTensorsW4A4Nvfp4MoE(CompressedTensorsMoEScheme):
         params_dtype: torch.dtype,
         **extra_weight_attrs,
     ):
-        from sglang.srt.layers.moe.fused_moe_triton import FusedMoeWeightScaleSupported
-
         layer.params_dtype = params_dtype
         layer.intermediate_size_per_partition = intermediate_size_per_partition
 
@@ -188,10 +189,6 @@ class CompressedTensorsW4A4Nvfp4MoE(CompressedTensorsMoEScheme):
         delattr(layer, "w2_weight_packed")
 
         if self.use_marlin_fallback:
-            from sglang.srt.layers.quantization.marlin_utils_fp4 import (
-                prepare_moe_fp4_layer_for_marlin,
-            )
-
             # CompressedTensors checkpoint: global_scale is stored as the inverse.
             # Actual dequant scale = 1 / stored_value. We create w*_weight_scale_2
             # with the actual scale before calling prepare_moe_fp4_layer_for_marlin().
@@ -345,11 +342,7 @@ class CompressedTensorsW4A4Nvfp4MoE(CompressedTensorsMoEScheme):
         dispatch_output: StandardDispatchOutput,
     ) -> CombineInput:
 
-        from sglang.srt.layers.moe.token_dispatcher import StandardCombineInput
-
         if self.use_marlin_fallback:
-            from sglang.srt.layers.moe.moe_runner.marlin import MarlinMoeQuantInfo
-
             expert_map = None
             global_num_experts = -1
             if hasattr(layer, "dispatcher") and hasattr(

@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Optional
 
 import torch
 
+from sglang.srt.layers.moe.fused_moe_triton.fused_marlin_moe import fused_marlin_moe
 from sglang.srt.layers.moe.moe_runner.base import (
     MoeQuantInfo,
     MoeRunnerConfig,
@@ -12,7 +13,9 @@ from sglang.srt.layers.moe.moe_runner.base import (
     RunnerOutput,
     register_fused_func,
 )
+from sglang.srt.layers.moe.token_dispatcher.standard import StandardCombineInput
 from sglang.srt.layers.moe.utils import MoeRunnerBackend
+from sglang.srt.layers.quantization.marlin_utils import marlin_make_workspace
 
 if TYPE_CHECKING:
     from sglang.srt.layers.moe.token_dispatcher import (
@@ -85,9 +88,6 @@ def fused_experts_none_to_marlin(
     runner_config: MoeRunnerConfig,
 ) -> StandardCombineInput:
     global MARLIN_MOE_WORKSPACE
-    from sglang.srt.layers.moe.fused_moe_triton.fused_marlin_moe import fused_marlin_moe
-    from sglang.srt.layers.moe.token_dispatcher.standard import StandardCombineInput
-    from sglang.srt.layers.quantization.marlin_utils import marlin_make_workspace
 
     hidden_states = dispatch_output.hidden_states
     topk_output = dispatch_output.topk_output
