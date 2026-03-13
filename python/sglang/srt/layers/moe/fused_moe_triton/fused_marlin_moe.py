@@ -2,8 +2,6 @@ from typing import Optional
 
 import torch
 
-from sglang.srt.layers.moe.fused_moe_triton import moe_align_block_size
-from sglang.srt.layers.quantization.utils import get_scalar_types
 from sglang.srt.utils import is_cuda
 from sglang.srt.utils.custom_op import register_custom_op
 
@@ -11,12 +9,13 @@ _is_cuda = is_cuda()
 
 if _is_cuda:
     from sgl_kernel import moe_sum_reduce, silu_and_mul
-    from sgl_kernel.scalar_type import scalar_types
 
     from sglang.jit_kernel.moe_wna16_marlin import moe_wna16_marlin_gemm
 
 
 def get_scalar_type(num_bits: int, has_zp: bool):
+    from sgl_kernel.scalar_type import scalar_types
+
     if has_zp:
         assert num_bits == 4
         return scalar_types.uint4
@@ -25,6 +24,8 @@ def get_scalar_type(num_bits: int, has_zp: bool):
 
 
 def _get_fp4_scalar_type():
+    from sglang.srt.layers.quantization.utils import get_scalar_types
+
     _, scalar_types = get_scalar_types()
     return scalar_types.float4_e2m1f
 
@@ -82,6 +83,8 @@ def fused_marlin_moe(
     Returns:
     - torch.Tensor: The output tensor after applying the MoE layer.
     """
+    from sglang.srt.layers.moe.fused_moe_triton import moe_align_block_size
+
     # Detect FP4 Marlin mode (when global scales are provided)
     _is_fp4_marlin = w1_global_scale is not None
 

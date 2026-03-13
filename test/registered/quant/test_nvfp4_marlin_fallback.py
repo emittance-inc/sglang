@@ -10,25 +10,8 @@ import unittest
 
 import torch
 
-from sglang.srt.layers.moe.fused_moe_triton.fused_marlin_moe import fused_marlin_moe
-from sglang.srt.layers.quantization.marlin_utils import marlin_permute_scales
-from sglang.srt.layers.quantization.marlin_utils_fp4 import (
-    apply_fp4_marlin_linear,
-    is_fp4_marlin_supported,
-    nvfp4_marlin_process_global_scale,
-    nvfp4_marlin_process_scales,
-    prepare_fp4_layer_for_marlin,
-    prepare_moe_fp4_layer_for_marlin,
-)
-from sglang.srt.layers.quantization.modelopt_quant import ModelOptFp4Config
-from sglang.srt.utils import is_cuda
 from sglang.test.ci.ci_register import register_cuda_ci
 from sglang.test.test_utils import CustomTestCase
-
-try:
-    from sglang.jit_kernel.gptq_marlin_repack import gptq_marlin_repack
-except ImportError:
-    gptq_marlin_repack = None
 
 register_cuda_ci(est_time=600, suite="stage-b-test-large-1-gpu")
 
@@ -37,8 +20,12 @@ logger = logging.getLogger(__name__)
 
 
 def _check_requirements():
+    from sglang.srt.utils import is_cuda
+
     if not is_cuda():
         return False
+    from sglang.srt.layers.quantization.marlin_utils_fp4 import is_fp4_marlin_supported
+
     if not is_fp4_marlin_supported():
         return False
     return True
@@ -83,6 +70,11 @@ class TestNvfp4MarlinLinear(CustomTestCase):
 
     def test_prepare_and_apply_fp4_marlin_linear(self):
         """Test prepare_fp4_layer_for_marlin + apply_fp4_marlin_linear."""
+        from sglang.srt.layers.quantization.marlin_utils_fp4 import (
+            apply_fp4_marlin_linear,
+            prepare_fp4_layer_for_marlin,
+        )
+
         N, K = 256, 128
         layer = self._make_fake_fp4_layer(N, K)
 
@@ -112,6 +104,11 @@ class TestNvfp4MarlinLinear(CustomTestCase):
 
     def test_nvfp4_marlin_process_scales(self):
         """Test that scale conversion functions produce non-NaN outputs."""
+        from sglang.srt.layers.quantization.marlin_utils_fp4 import (
+            nvfp4_marlin_process_global_scale,
+            nvfp4_marlin_process_scales,
+        )
+
         N, K_div_group = 64, 16
 
         raw_scale = torch.ones(
@@ -140,7 +137,17 @@ class TestNvfp4MarlinMoe(CustomTestCase):
 
     def test_fused_marlin_moe_fp4(self):
         """Test fused_marlin_moe with FP4 global scales."""
-        if gptq_marlin_repack is None:
+        from sglang.srt.layers.moe.fused_moe_triton.fused_marlin_moe import (
+            fused_marlin_moe,
+        )
+        from sglang.srt.layers.quantization.marlin_utils import marlin_permute_scales
+        from sglang.srt.layers.quantization.marlin_utils_fp4 import (
+            nvfp4_marlin_process_scales,
+        )
+
+        try:
+            from sglang.jit_kernel.gptq_marlin_repack import gptq_marlin_repack
+        except ImportError:
             self.skipTest("gptq_marlin_repack not available")
 
         E = 4
@@ -212,7 +219,13 @@ class TestNvfp4MarlinMoe(CustomTestCase):
 
     def test_prepare_moe_fp4_layer_for_marlin(self):
         """Test that prepare_moe_fp4_layer_for_marlin correctly repacks weights."""
-        if gptq_marlin_repack is None:
+        from sglang.srt.layers.quantization.marlin_utils_fp4 import (
+            prepare_moe_fp4_layer_for_marlin,
+        )
+
+        try:
+            from sglang.jit_kernel.gptq_marlin_repack import gptq_marlin_repack  # noqa
+        except ImportError:
             self.skipTest("gptq_marlin_repack not available")
 
         E = 4
@@ -276,6 +289,10 @@ class TestFp4MarlinSupport(CustomTestCase):
     """Test the capability detection functions."""
 
     def test_is_fp4_marlin_supported(self):
+        from sglang.srt.layers.quantization.marlin_utils_fp4 import (
+            is_fp4_marlin_supported,
+        )
+
         result = is_fp4_marlin_supported()
         if torch.cuda.is_available():
             cap = torch.cuda.get_device_capability()
@@ -285,6 +302,8 @@ class TestFp4MarlinSupport(CustomTestCase):
 
     def test_min_capability_changed(self):
         """Verify get_min_capability() returns 75 (not 100)."""
+        from sglang.srt.layers.quantization.modelopt_quant import ModelOptFp4Config
+
         cap = ModelOptFp4Config.get_min_capability()
         self.assertEqual(cap, 75, f"Expected 75, got {cap}")
 
