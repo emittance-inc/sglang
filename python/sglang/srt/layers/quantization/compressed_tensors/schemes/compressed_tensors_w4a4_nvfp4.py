@@ -92,13 +92,17 @@ class CompressedTensorsW4A4Fp4(CompressedTensorsLinearScheme):
         layer.register_parameter("input_global_scale", input_global_scale)
 
     def process_weights_after_loading(self, layer) -> None:
+        from sglang.srt.environ import envs
         from sglang.srt.layers.quantization.fp8_utils import is_blackwell_supported
         from sglang.srt.layers.quantization.marlin_utils_fp4 import (
             is_fp4_marlin_supported,
             prepare_fp4_layer_for_marlin,
         )
 
-        if not is_blackwell_supported() and is_fp4_marlin_supported():
+        force_nvfp4_marlin = envs.SGLANG_FORCE_NVFP4_MARLIN.get()
+        if (
+            force_nvfp4_marlin or not is_blackwell_supported()
+        ) and is_fp4_marlin_supported():
             # Marlin FP4 fallback: consolidate global scale then repack weights
             global_scale = layer.weight_global_scale.max().to(torch.float32)
             layer.weight_global_scale = Parameter(global_scale, requires_grad=False)

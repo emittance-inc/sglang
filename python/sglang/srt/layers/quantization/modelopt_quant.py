@@ -1185,7 +1185,10 @@ class ModelOptFp4LinearMethod(LinearMethodBase):
             prepare_fp4_layer_for_marlin,
         )
 
-        if not is_blackwell_supported() and is_fp4_marlin_supported():
+        force_nvfp4_marlin = envs.SGLANG_FORCE_NVFP4_MARLIN.get()
+        if (
+            force_nvfp4_marlin or not is_blackwell_supported()
+        ) and is_fp4_marlin_supported():
             # Marlin FP4 fallback: consolidate global scale then repack weights
             weight_scale_2 = layer.weight_scale_2.max().to(torch.float32)
             layer.weight_scale_2_marlin = Parameter(weight_scale_2, requires_grad=False)
@@ -1367,7 +1370,8 @@ class ModelOptNvFp4FusedMoEMethod(FusedMoEMethodBase):
 
     def __init__(self, quant_config: ModelOptFp4Config):
         self.quant_config = quant_config
-        if not is_blackwell_supported():
+        force_nvfp4_marlin = envs.SGLANG_FORCE_NVFP4_MARLIN.get()
+        if force_nvfp4_marlin or not is_blackwell_supported():
             from sglang.srt.layers.quantization.marlin_utils_fp4 import (
                 is_fp4_marlin_supported,
             )

@@ -294,11 +294,13 @@ class TestFp4MarlinSupport(CustomTestCase):
         )
 
         result = is_fp4_marlin_supported()
-        if torch.cuda.is_available():
+        if torch.cuda.is_available() and torch.version.hip is None:
             cap = torch.cuda.get_device_capability()
             sm = cap[0] * 10 + cap[1]
             expected = sm >= 75
             self.assertEqual(result, expected)
+        elif torch.version.hip is not None:
+            self.assertFalse(result, "FP4 Marlin should not be supported on ROCm/HIP")
 
     def test_min_capability_changed(self):
         """Verify get_min_capability() returns 75 (not 100)."""

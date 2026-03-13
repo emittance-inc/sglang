@@ -87,6 +87,10 @@ def fused_marlin_moe(
 
     # Detect FP4 Marlin mode (when global scales are provided)
     _is_fp4_marlin = w1_global_scale is not None
+    if _is_fp4_marlin:
+        assert (
+            w2_global_scale is not None
+        ), "Both w1_global_scale and w2_global_scale must be provided for FP4 Marlin mode"
 
     assert hidden_states.shape[0] == gating_output.shape[0], "Number of tokens mismatch"
     assert hidden_states.shape[1] == w1.shape[1] * 16, "Hidden size mismatch w1"

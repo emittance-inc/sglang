@@ -39,7 +39,10 @@ class CompressedTensorsW4A4Nvfp4MoE(CompressedTensorsMoEScheme):
 
     def __init__(self):
         self.group_size = 16
-        if not is_blackwell_supported():
+        from sglang.srt.environ import envs
+
+        force_nvfp4_marlin = envs.SGLANG_FORCE_NVFP4_MARLIN.get()
+        if force_nvfp4_marlin or not is_blackwell_supported():
             from sglang.srt.layers.quantization.marlin_utils_fp4 import (
                 is_fp4_marlin_supported,
             )
