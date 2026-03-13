@@ -47,8 +47,13 @@ FP4_MARLIN_GROUP_SIZE = 16
 
 
 def is_fp4_marlin_supported() -> bool:
-    """Check if the current GPU supports FP4 Marlin fallback (requires SM >= 75)."""
+    """Check if the current GPU supports FP4 Marlin fallback (requires SM >= 75).
+
+    Marlin kernel is CUDA-only; ROCm/HIP is not supported.
+    """
     if not _is_cuda:
+        return False
+    if torch.version.hip is not None:
         return False
     major, minor = get_device_capability()
     if major is None or minor is None:
