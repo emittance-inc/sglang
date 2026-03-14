@@ -364,7 +364,9 @@ class TestNvfp4MarlinCorrectness(CustomTestCase):
 
         # Per-group scales: choose values from valid FP8 E4M3 range
         num_groups = K // GROUP_SIZE
-        scales_float = torch.rand(N, num_groups, device=self.device) * 10 + 0.5  # [0.5, 10.5]
+        scales_float = (
+            torch.rand(N, num_groups, device=self.device) * 10 + 0.5
+        )  # [0.5, 10.5]
         scales_fp8 = scales_float.to(torch.float8_e4m3fn)
         scales_float_actual = scales_fp8.to(torch.float32)  # after FP8 rounding
 
@@ -376,7 +378,9 @@ class TestNvfp4MarlinCorrectness(CustomTestCase):
 
         # --- Reference output ---
         # weight_deq = FP4_decoded * per_group_scale * global_scale
-        scales_expanded = scales_float_actual.repeat_interleave(GROUP_SIZE, dim=1)  # (N, K)
+        scales_expanded = scales_float_actual.repeat_interleave(
+            GROUP_SIZE, dim=1
+        )  # (N, K)
         weight_deq = weight_float * scales_expanded * global_scale_val  # (N, K) float32
         weight_deq = weight_deq.to(self.dtype)
 
@@ -441,9 +445,7 @@ class TestNvfp4MarlinCorrectness(CustomTestCase):
         ).item()
         logger.info("Cosine similarity: %.6f", cos_sim)
 
-        self.assertGreater(
-            cos_sim, 0.99, f"Cosine similarity too low: {cos_sim:.6f}"
-        )
+        self.assertGreater(cos_sim, 0.99, f"Cosine similarity too low: {cos_sim:.6f}")
 
         # Also check max absolute error is bounded
         max_abs = abs_diff.max().item()
@@ -479,9 +481,8 @@ class TestNvfp4MarlinCorrectness(CustomTestCase):
         fp4_packed = torch.randint(
             0, 256, (N, K // 2), dtype=torch.uint8, device=self.device
         )
-        scales_fp8 = (
-            (torch.rand(N, K // GROUP_SIZE, device=self.device) * 5 + 0.5)
-            .to(torch.float8_e4m3fn)
+        scales_fp8 = (torch.rand(N, K // GROUP_SIZE, device=self.device) * 5 + 0.5).to(
+            torch.float8_e4m3fn
         )
         global_scale_val = 0.0005
 
@@ -515,15 +516,9 @@ class TestNvfp4MarlinCorrectness(CustomTestCase):
 
         # Both should produce finite values
         for dtype, out in outputs.items():
-            self.assertFalse(
-                torch.isnan(out).any(), f"{dtype} output contains NaN"
-            )
-            self.assertFalse(
-                torch.isinf(out).any(), f"{dtype} output contains Inf"
-            )
-            self.assertFalse(
-                (out == 0).all(), f"{dtype} output is all zeros"
-            )
+            self.assertFalse(torch.isnan(out).any(), f"{dtype} output contains NaN")
+            self.assertFalse(torch.isinf(out).any(), f"{dtype} output contains Inf")
+            self.assertFalse((out == 0).all(), f"{dtype} output is all zeros")
 
         # The outputs won't be identical (different dtypes, different inputs),
         # but both should have similar magnitude distributions

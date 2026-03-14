@@ -490,9 +490,8 @@ __global__ void Marlin(
   // FP4 (kFE2M1f) uses FP8 scales (1 byte/element), others use FP16 (2 bytes)
   int s_gl_stride = prob_n / (w_type == sglang::kFE2M1f ? 16 : 8);
   constexpr int s_sh_stride = 16 * thread_n_blocks / (w_type == sglang::kFE2M1f ? 16 : 8);
-  constexpr int s_tb_groups = !has_act_order && group_blocks != -1 && group_blocks < thread_k_blocks
-                                  ? thread_k_blocks / group_blocks
-                                  : 1;
+  constexpr int s_tb_groups =
+      !has_act_order && group_blocks != -1 && group_blocks < thread_k_blocks ? thread_k_blocks / group_blocks : 1;
   constexpr int s_sh_stage = s_tb_groups * s_sh_stride;
   int s_gl_rd_delta = s_gl_stride;
 
@@ -544,8 +543,7 @@ __global__ void Marlin(
     if constexpr (group_blocks == -1) {
       s_gl_rd = s_sh_stride * slice_col + threadIdx.x;
     } else {
-      s_gl_rd = s_gl_stride * ((thread_k_blocks * slice_row) / group_blocks) +
-                s_sh_stride * slice_col + threadIdx.x;
+      s_gl_rd = s_gl_stride * ((thread_k_blocks * slice_row) / group_blocks) + s_sh_stride * slice_col + threadIdx.x;
     }
   }
   auto s_sh_wr = threadIdx.x;

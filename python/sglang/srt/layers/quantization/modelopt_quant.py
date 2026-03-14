@@ -1181,22 +1181,12 @@ class ModelOptFp4LinearMethod(LinearMethodBase):
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
         from sglang.srt.layers.quantization.marlin_utils_fp4 import (
-            is_fp4_marlin_supported,
             prepare_fp4_layer_for_marlin,
+            should_use_fp4_marlin_fallback,
         )
 
-        force_nvfp4_marlin = envs.SGLANG_FORCE_NVFP4_MARLIN.get()
-        if (
-            force_nvfp4_marlin or not is_blackwell_supported()
-        ) and is_fp4_marlin_supported():
+        if should_use_fp4_marlin_fallback():
             # Marlin FP4 fallback: consolidate global scale then repack weights
-            if get_bool_env_var("SGLANG_NVFP4_MARLIN_DEBUG"):
-                import logging
-                logging.getLogger(__name__).info(
-                    "[NVFP4_MARLIN_DEBUG] modelopt process_weights: entering Marlin path, "
-                    "weight_scale_2 shape=%s",
-                    tuple(layer.weight_scale_2.shape),
-                )
             weight_scale_2 = layer.weight_scale_2.max().to(torch.float32)
             layer.weight_scale_2_marlin = Parameter(weight_scale_2, requires_grad=False)
             prepare_fp4_layer_for_marlin(
@@ -1377,23 +1367,22 @@ class ModelOptNvFp4FusedMoEMethod(FusedMoEMethodBase):
 
     def __init__(self, quant_config: ModelOptFp4Config):
         self.quant_config = quant_config
-        force_nvfp4_marlin = envs.SGLANG_FORCE_NVFP4_MARLIN.get()
-        if force_nvfp4_marlin or not is_blackwell_supported():
-            from sglang.srt.layers.quantization.marlin_utils_fp4 import (
-                is_fp4_marlin_supported,
-            )
+        from sglang.srt.layers.quantization.marlin_utils_fp4 import (
+            should_use_fp4_marlin_fallback,
+        )
 
-            if not is_fp4_marlin_supported():
-                raise ValueError(
-                    "Current platform does not support NVFP4"
-                    " quantization. Please use SM75+ (Turing or newer)."
-                )
+        if should_use_fp4_marlin_fallback():
             logger.warning_once(
                 "GPU is not Blackwell (SM100+). Using Marlin FP4 fallback kernel "
                 "for MoE layers. Weights remain compressed in FP4 format."
             )
             self.use_marlin_fallback = True
             self.enable_flashinfer_trtllm_moe = False
+        elif not is_blackwell_supported():
+            raise ValueError(
+                "Current platform does not support NVFP4"
+                " quantization. Please use SM75+ (Turing or newer)."
+            )
         else:
             self.use_marlin_fallback = False
             self.enable_flashinfer_trtllm_moe = (

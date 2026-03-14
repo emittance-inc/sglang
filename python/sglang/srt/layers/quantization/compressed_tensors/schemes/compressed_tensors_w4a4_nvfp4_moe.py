@@ -39,25 +39,22 @@ class CompressedTensorsW4A4Nvfp4MoE(CompressedTensorsMoEScheme):
 
     def __init__(self):
         self.group_size = 16
-        from sglang.srt.environ import envs
+        from sglang.srt.layers.quantization.marlin_utils_fp4 import (
+            should_use_fp4_marlin_fallback,
+        )
 
-        force_nvfp4_marlin = envs.SGLANG_FORCE_NVFP4_MARLIN.get()
-        if force_nvfp4_marlin or not is_blackwell_supported():
-            from sglang.srt.layers.quantization.marlin_utils_fp4 import (
-                is_fp4_marlin_supported,
-            )
-
-            if not is_fp4_marlin_supported():
-                raise ValueError(
-                    "Current platform does not support NVFP4"
-                    " quantization. Please use SM75+ (Turing or newer)."
-                )
+        if should_use_fp4_marlin_fallback():
             logger.warning_once(
                 "GPU is not Blackwell (SM100+). Using Marlin FP4 fallback kernel "
                 "for MoE layers. Weights remain compressed in FP4 format."
             )
             self.use_marlin_fallback = True
             self.use_flashinfer_trtllm = False
+        elif not is_blackwell_supported():
+            raise ValueError(
+                "Current platform does not support NVFP4"
+                " quantization. Please use SM75+ (Turing or newer)."
+            )
         else:
             self.use_marlin_fallback = False
             self.use_flashinfer_trtllm = get_moe_runner_backend().is_flashinfer_trtllm()
