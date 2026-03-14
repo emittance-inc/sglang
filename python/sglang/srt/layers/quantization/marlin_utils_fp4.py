@@ -65,20 +65,16 @@ def is_fp4_marlin_supported() -> bool:
     return (major * 10 + minor) >= 75
 
 
-def nvfp4_marlin_process_scales(
-    marlin_scales: torch.Tensor,
-) -> tuple[torch.Tensor, float]:
+def nvfp4_marlin_process_scales(marlin_scales: torch.Tensor) -> torch.Tensor:
     """Convert NVFP4 scales from FP8-S1E4M3 to special FP8-S0E5M3 format.
 
     This transformation allows the Marlin kernel to perform faster dequantization
     by bringing the exponent bias closer to zero (NVFP4 guarantees non-negative scales).
 
-    For scale values > 256, (scale * 128) overflows int16. We normalize scales to
-    max 256 and return a multiplier for the caller to apply to global_scale.
-
-    Returns:
-        (processed_scales, scale_multiplier): scale_multiplier must be applied
-        to global_scale to preserve correctness.
+    The intermediate (scale * 128).view(int16) << 1 may wrap around for large scales
+    (e.g. 448 * 128 = 57344, which as int16 after <<1 wraps to negative), but the BIT
+    PATTERN is preserved correctly. The kernel reads the raw bytes and does its own bit
+    manipulation, so the int16 sign interpretation is irrelevant.
     """
     if _NVFP4_MARLIN_DEBUG and _nvfp4_marlin_prepare_count <= 3:
         _m = marlin_scales.to(torch.float32) if marlin_scales.numel() > 0 else None
@@ -92,8 +88,6 @@ def nvfp4_marlin_process_scales(
             _m.max().item() if _m is not None else "N/A",
             _m.mean().item() if _m is not None else "N/A",
         )
-    # Convert to FP16 first (the bit manipulation assumes 16-bit representation).
-    # Must happen before the comparison since CUDA doesn't support compare on Float8_e4m3fn.
     marlin_scales = marlin_scales.to(torch.half)
 
     if not (marlin_scales >= 0).all():
@@ -103,39 +97,26 @@ def nvfp4_marlin_process_scales(
             "to a special FP8-S0E5M3 format to speed up dequantization."
         )
 
-    # Avoid int16 overflow: (scale * 128) overflows when scale > 255 (32768 > 32767).
-    # Normalize scales to max 255 and compensate via global_scale.
-    scale_max = marlin_scales.float().max().item()
-    scale_multiplier = 1.0
-    if scale_max > 255.0:
-        scale_multiplier = scale_max / 255.0
-        marlin_scales = marlin_scales / scale_multiplier
-
-    # Reorder columns to match Marlin's FP8 dequantization layout
     marlin_scales = marlin_scales.view(-1, 4)[:, [0, 2, 1, 3]].view(
         marlin_scales.size(0), -1
     )
 
-    # Convert FP8-S1E4M3 -> special FP8-S0E5M3:
-    # Multiply by 2^7 (shifts exponent), reinterpret as int16, shift left by 1 bit
     marlin_scales = (marlin_scales * (2**7)).view(torch.int16) << 1
     marlin_scales = marlin_scales.view(torch.float8_e4m3fn)
-    # Take every other element (the shift + reinterpret doubles elements)
     marlin_scales = marlin_scales[:, 1::2].contiguous()
 
     if _NVFP4_MARLIN_DEBUG and _nvfp4_marlin_prepare_count <= 3:
         _m = marlin_scales.to(torch.float32) if marlin_scales.numel() > 0 else None
         logger.info(
             "[NVFP4_MARLIN_DEBUG] nvfp4_marlin_process_scales OUT (layer#%d): shape=%s dtype=%s "
-            "min=%s max=%s scale_multiplier=%s",
+            "min=%s max=%s",
             _nvfp4_marlin_prepare_count,
             tuple(marlin_scales.shape),
             marlin_scales.dtype,
             _m.min().item() if _m is not None else "N/A",
             _m.max().item() if _m is not None else "N/A",
-            scale_multiplier,
         )
-    return marlin_scales, scale_multiplier
+    return marlin_scales
 
 
 def nvfp4_marlin_process_global_scale(global_scale: torch.Tensor) -> torch.Tensor:
@@ -369,7 +350,7 @@ def prepare_fp4_layer_for_marlin(
         size_n=part_size_n,
         group_size=FP4_MARLIN_GROUP_SIZE,
     )
-    weight_scale, scale_multiplier = nvfp4_marlin_process_scales(weight_scale)
+    weight_scale = nvfp4_marlin_process_scales(weight_scale)
     setattr(
         layer, weight_scale_attr, torch.nn.Parameter(weight_scale, requires_grad=False)
     )
@@ -382,11 +363,8 @@ def prepare_fp4_layer_for_marlin(
         )
 
     # GLOBAL SCALE: Pre-adjust exponent bias for Marlin kernel.
-    # Apply scale_multiplier when scales were normalized to avoid int16 overflow.
     weight_global_scale = getattr(layer, weight_global_scale_attr)
     weight_global_scale = weight_global_scale.to(param_dtype)
-    if scale_multiplier != 1.0:
-        weight_global_scale = weight_global_scale * scale_multiplier
     weight_global_scale = nvfp4_marlin_process_global_scale(weight_global_scale)
     setattr(
         layer,
@@ -493,9 +471,7 @@ def prepare_moe_fp4_layer_for_marlin(layer: torch.nn.Module) -> None:
             size_k = n
 
         tensor_list = []
-        scale_multipliers = []
         for i in range(e):
-            # Transpose: (size_n, size_k//group_size) -> (size_k//group_size, size_n)
             scale = scales.data[i].T
             marlin_scales = marlin_permute_scales(
                 s=scale,
@@ -503,9 +479,8 @@ def prepare_moe_fp4_layer_for_marlin(layer: torch.nn.Module) -> None:
                 size_n=size_n,
                 group_size=FP4_MARLIN_GROUP_SIZE,
             )
-            marlin_scales, scale_mult = nvfp4_marlin_process_scales(marlin_scales)
+            marlin_scales = nvfp4_marlin_process_scales(marlin_scales)
             tensor_list.append(marlin_scales)
-            scale_multipliers.append(scale_mult)
 
         del scales
         processed_scales = torch.cat([x.unsqueeze(0) for x in tensor_list], 0)
@@ -516,22 +491,9 @@ def prepare_moe_fp4_layer_for_marlin(layer: torch.nn.Module) -> None:
             torch.nn.Parameter(processed_scales, requires_grad=False),
         )
 
-        # Global scale: [E] or [E, 2] (gated case has separate w1/w3 scales).
-        # The Marlin kernel expects one scalar per expert -> use max across shards.
         if global_scale.dim() > 1:
-            global_scale = global_scale.max(dim=-1).values  # [E, 2] -> [E]
+            global_scale = global_scale.max(dim=-1).values
 
-        # Apply scale_multiplier when scales were normalized to avoid int16 overflow.
-        scale_mult = max(scale_multipliers)
-        if scale_mult != 1.0:
-            global_scale = global_scale * scale_mult
-
-        # Apply the same exponent bias compensation used by the linear kernel.
-        # Both linear and MoE Marlin kernels apply global_scale identically
-        # via __hmul2(res, global_scale) post-GEMM, and both use
-        # nvfp4_marlin_process_scales (which embeds a 2^7 factor) for
-        # per-group scales. The global scale must compensate for that factor
-        # plus the FP4 <-> FP16/BF16 exponent bias difference.
         global_scale = nvfp4_marlin_process_global_scale(global_scale)
         setattr(
             layer,

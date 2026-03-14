@@ -115,24 +115,18 @@ class TestNvfp4MarlinLinear(CustomTestCase):
             N, K_div_group, dtype=torch.float8_e4m3fn, device=self.device
         )
         raw_scale = raw_scale.to(self.dtype)
-        processed, scale_mult = nvfp4_marlin_process_scales(raw_scale)
+        processed = nvfp4_marlin_process_scales(raw_scale)
 
         self.assertFalse(torch.isnan(processed.to(self.dtype)).any())
-        self.assertIsInstance(scale_mult, float)
         self.assertEqual(processed.dtype, torch.float8_e4m3fn)
 
-        # Test overflow case: scale > 255 causes int16 overflow without normalization.
-        # With fix, scale_multiplier > 1 and processed scales stay non-negative.
+        # Large scales (e.g. 448 = FP8 E4M3 max) are valid. The int16 wrapping
+        # from (scale*128) << 1 preserves bit patterns correctly for the kernel.
         large_scale = torch.full(
             (N, K_div_group), 448.0, dtype=self.dtype, device=self.device
         )
-        proc_large, mult = nvfp4_marlin_process_scales(large_scale)
-        self.assertGreater(mult, 1.0, "scale_multiplier should be > 1 when max > 255")
-        proc_f32 = proc_large.to(torch.float32)
-        self.assertGreaterEqual(
-            proc_f32.min().item(), -1e-6,
-            "Processed scales should be non-negative (no int16 overflow)",
-        )
+        proc_large = nvfp4_marlin_process_scales(large_scale)
+        self.assertFalse(torch.isnan(proc_large.to(self.dtype)).any())
 
         global_scale = torch.tensor(1.0, dtype=self.dtype, device=self.device)
         processed_global = nvfp4_marlin_process_global_scale(global_scale)
@@ -186,7 +180,7 @@ class TestNvfp4MarlinMoe(CustomTestCase):
                 device=self.device,
             )
             permuted = marlin_permute_scales(raw, size_k, size_n, FP4_MARLIN_GROUP_SIZE)
-            processed, _ = nvfp4_marlin_process_scales(permuted)
+            processed = nvfp4_marlin_process_scales(permuted)
             return processed
 
         def _make_global_scale():
