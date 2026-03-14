@@ -238,10 +238,11 @@ def prepare_fp4_layer_for_marlin(
     del qweight
     setattr(layer, weight_attr, torch.nn.Parameter(marlin_qweight, requires_grad=False))
 
-    # WEIGHT SCALES: Transpose, permute, convert to FP8-S0E5M3 format
+    # WEIGHT SCALES: Transpose, permute, convert to FP8-S0E5M3 format.
+    # Keep as FP8 until nvfp4_marlin_process_scales to avoid precision loss from
+    # FP8->BF16 conversion before permute (can zero out small scales).
     weight_scale = getattr(layer, weight_scale_attr)
     weight_scale = weight_scale.data.T.contiguous()
-    weight_scale = weight_scale.to(param_dtype)
     weight_scale = marlin_permute_scales(
         s=weight_scale,
         size_k=part_size_k,
@@ -343,7 +344,7 @@ def prepare_moe_fp4_layer_for_marlin(layer: torch.nn.Module) -> None:
         scales = getattr(layer, name + "_weight_scale")
         global_scale = getattr(layer, name + "_weight_scale_2")
 
-        scales = scales.to(param_dtype)
+        # Keep scales as FP8 until nvfp4_marlin_process_scales to avoid precision loss.
         global_scale = global_scale.to(param_dtype)
 
         if "w13" in name:
@@ -356,6 +357,7 @@ def prepare_moe_fp4_layer_for_marlin(layer: torch.nn.Module) -> None:
         tensor_list = []
         for i in range(e):
             # Transpose: (size_n, size_k//group_size) -> (size_k//group_size, size_n)
+            # Keep as FP8 until nvfp4_marlin_process_scales to avoid precision loss.
             scale = scales.data[i].T
             marlin_scales = marlin_permute_scales(
                 s=scale,
