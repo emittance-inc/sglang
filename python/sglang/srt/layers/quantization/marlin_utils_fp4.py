@@ -67,15 +67,16 @@ def nvfp4_marlin_process_scales(marlin_scales: torch.Tensor) -> torch.Tensor:
     This transformation allows the Marlin kernel to perform faster dequantization
     by bringing the exponent bias closer to zero (NVFP4 guarantees non-negative scales).
     """
+    # Convert to FP16 first (the bit manipulation assumes 16-bit representation).
+    # Must happen before the comparison since CUDA doesn't support compare on Float8_e4m3fn.
+    marlin_scales = marlin_scales.to(torch.half)
+
     if not (marlin_scales >= 0).all():
         logger.warning_once(
             "NVFP4 Marlin assumes scales >= 0, but encountered negative scales. "
             "Accuracy may be degraded. The scales are converted from FP8-S1E4M3 "
             "to a special FP8-S0E5M3 format to speed up dequantization."
         )
-
-    # Convert to FP16 first (the bit manipulation assumes 16-bit representation)
-    marlin_scales = marlin_scales.to(torch.half)
 
     # Reorder columns to match Marlin's FP8 dequantization layout
     marlin_scales = marlin_scales.view(-1, 4)[:, [0, 2, 1, 3]].view(
