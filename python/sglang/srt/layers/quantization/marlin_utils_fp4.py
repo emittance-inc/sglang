@@ -31,7 +31,11 @@ from sglang.srt.layers.quantization.marlin_utils import (
     should_use_atomic_add_reduce,
 )
 from sglang.srt.layers.quantization.utils import get_scalar_types
-from sglang.srt.utils import get_device_capability, is_cuda
+from sglang.srt.utils import get_bool_env_var, get_device_capability, is_cuda
+
+_NVFP4_MARLIN_DEBUG = get_bool_env_var("SGLANG_NVFP4_MARLIN_DEBUG")
+_nvfp4_marlin_prepare_count = 0
+_nvfp4_marlin_apply_count = 0
 
 _is_cuda = is_cuda()
 if _is_cuda:
@@ -67,6 +71,18 @@ def nvfp4_marlin_process_scales(marlin_scales: torch.Tensor) -> torch.Tensor:
     This transformation allows the Marlin kernel to perform faster dequantization
     by bringing the exponent bias closer to zero (NVFP4 guarantees non-negative scales).
     """
+    if _NVFP4_MARLIN_DEBUG and _nvfp4_marlin_prepare_count <= 3:
+        _m = marlin_scales.to(torch.float32) if marlin_scales.numel() > 0 else None
+        logger.info(
+            "[NVFP4_MARLIN_DEBUG] nvfp4_marlin_process_scales IN (layer#%d): shape=%s dtype=%s "
+            "min=%s max=%s mean=%s",
+            _nvfp4_marlin_prepare_count,
+            tuple(marlin_scales.shape),
+            marlin_scales.dtype,
+            _m.min().item() if _m is not None else "N/A",
+            _m.max().item() if _m is not None else "N/A",
+            _m.mean().item() if _m is not None else "N/A",
+        )
     # Convert to FP16 first (the bit manipulation assumes 16-bit representation).
     # Must happen before the comparison since CUDA doesn't support compare on Float8_e4m3fn.
     marlin_scales = marlin_scales.to(torch.half)
@@ -90,6 +106,17 @@ def nvfp4_marlin_process_scales(marlin_scales: torch.Tensor) -> torch.Tensor:
     # Take every other element (the shift + reinterpret doubles elements)
     marlin_scales = marlin_scales[:, 1::2].contiguous()
 
+    if _NVFP4_MARLIN_DEBUG and _nvfp4_marlin_prepare_count <= 3:
+        _m = marlin_scales.to(torch.float32) if marlin_scales.numel() > 0 else None
+        logger.info(
+            "[NVFP4_MARLIN_DEBUG] nvfp4_marlin_process_scales OUT (layer#%d): shape=%s dtype=%s "
+            "min=%s max=%s",
+            _nvfp4_marlin_prepare_count,
+            tuple(marlin_scales.shape),
+            marlin_scales.dtype,
+            _m.min().item() if _m is not None else "N/A",
+            _m.max().item() if _m is not None else "N/A",
+        )
     return marlin_scales
 
 
@@ -107,6 +134,16 @@ def nvfp4_marlin_process_global_scale(global_scale: torch.Tensor) -> torch.Tenso
         torch.half,
         torch.bfloat16,
     ], f"global_scale dtype must be half or bfloat16, got {global_scale.dtype}"
+    if _NVFP4_MARLIN_DEBUG and _nvfp4_marlin_prepare_count <= 3:
+        _val = global_scale.float().item() if global_scale.numel() == 1 else global_scale.float().tolist()
+        logger.info(
+            "[NVFP4_MARLIN_DEBUG] nvfp4_marlin_process_global_scale IN (layer#%d): shape=%s "
+            "dtype=%s value=%s",
+            _nvfp4_marlin_prepare_count,
+            tuple(global_scale.shape),
+            global_scale.dtype,
+            _val,
+        )
     out_dtype = global_scale.dtype
     # Use FP16 for computation to avoid BF16 overflow (2^119)
     global_scale = global_scale.to(torch.half)
@@ -115,6 +152,13 @@ def nvfp4_marlin_process_global_scale(global_scale: torch.Tensor) -> torch.Tenso
     exponent_bias = 2 ** (target_exponent - 1) - 2 ** (fp4_exponent - 1)  # 14
     # Subtract 7 because nvfp4_marlin_process_scales multiplies FP8 scales by 2**7.
     result = global_scale * (2.0 ** (exponent_bias - 7))
+    if _NVFP4_MARLIN_DEBUG and _nvfp4_marlin_prepare_count <= 3:
+        _val = result.float().item() if result.numel() == 1 else result.float().tolist()
+        logger.info(
+            "[NVFP4_MARLIN_DEBUG] nvfp4_marlin_process_global_scale OUT (layer#%d): value=%s",
+            _nvfp4_marlin_prepare_count,
+            _val,
+        )
     return result.to(out_dtype)
 
 
@@ -151,6 +195,22 @@ def apply_fp4_marlin_linear(
     reshaped_x = input.reshape(-1, input.shape[-1])
     out_shape = input.shape[:-1] + (size_n,)
 
+    global _nvfp4_marlin_apply_count
+    _nvfp4_marlin_apply_count += 1
+    if _NVFP4_MARLIN_DEBUG and _nvfp4_marlin_apply_count <= 5:
+        logger.info(
+            "[NVFP4_MARLIN_DEBUG] apply_fp4_marlin_linear call#%d: input shape=%s "
+            "weight shape=%s weight_scale shape=%s global_scale=%s "
+            "size_n=%d size_k=%d",
+            _nvfp4_marlin_apply_count,
+            tuple(reshaped_x.shape),
+            tuple(weight.shape),
+            tuple(weight_scale.shape),
+            weight_global_scale.float().item() if weight_global_scale is not None and weight_global_scale.numel() == 1 else (weight_global_scale.float().tolist() if weight_global_scale is not None else None),
+            size_n,
+            size_k,
+        )
+
     use_atomic_add = should_use_atomic_add_reduce(
         m=reshaped_x.size(0),
         n=size_n,
@@ -180,6 +240,19 @@ def apply_fp4_marlin_linear(
     if bias is not None:
         output.add_(bias)
 
+    if _NVFP4_MARLIN_DEBUG and _nvfp4_marlin_apply_count <= 5:
+        _o = output.reshape(out_shape)
+        logger.info(
+            "[NVFP4_MARLIN_DEBUG] apply_fp4_marlin_linear call#%d OUT: shape=%s "
+            "min=%s max=%s mean=%s has_nan=%s has_inf=%s",
+            _nvfp4_marlin_apply_count,
+            tuple(_o.shape),
+            _o.float().min().item(),
+            _o.float().max().item(),
+            _o.float().mean().item(),
+            torch.isnan(_o.float()).any().item(),
+            torch.isinf(_o.float()).any().item(),
+        )
     return output.reshape(out_shape)
 
 
@@ -208,11 +281,31 @@ def prepare_fp4_layer_for_marlin(
         "performance for compute-heavy workloads."
     )
 
+    global _nvfp4_marlin_prepare_count
+    _nvfp4_marlin_prepare_count += 1
+    _log_this_layer = _NVFP4_MARLIN_DEBUG and _nvfp4_marlin_prepare_count <= 3
+
     part_size_n = layer.output_size_per_partition
     part_size_k = layer.input_size_per_partition
     param_dtype = layer.params_dtype
 
     weight = getattr(layer, weight_attr)
+    if _log_this_layer:
+        _ws = getattr(layer, weight_scale_attr, None)
+        _wgs = getattr(layer, weight_global_scale_attr, None)
+        logger.info(
+            "[NVFP4_MARLIN_DEBUG] prepare_fp4_layer_for_marlin layer#%d: "
+            "weight shape=%s dtype=%s, weight_scale shape=%s dtype=%s, "
+            "weight_global_scale shape=%s dtype=%s value=%s",
+            _nvfp4_marlin_prepare_count,
+            tuple(weight.shape),
+            weight.dtype,
+            tuple(_ws.shape) if _ws is not None else None,
+            _ws.dtype if _ws is not None else None,
+            tuple(_wgs.shape) if _wgs is not None else None,
+            _wgs.dtype if _wgs is not None else None,
+            _wgs.float().item() if _wgs is not None and _wgs.numel() == 1 else "N/A",
+        )
     assert weight.shape == (part_size_n, part_size_k // 2), (
         f"Expected {weight_attr} shape ({part_size_n}, {part_size_k // 2}), "
         f"got {weight.shape}"
@@ -238,6 +331,14 @@ def prepare_fp4_layer_for_marlin(
     )
     del qweight
     setattr(layer, weight_attr, torch.nn.Parameter(marlin_qweight, requires_grad=False))
+    if _log_this_layer:
+        logger.info(
+            "[NVFP4_MARLIN_DEBUG] prepare_fp4_layer_for_marlin layer#%d: "
+            "marlin_qweight shape=%s dtype=%s",
+            _nvfp4_marlin_prepare_count,
+            tuple(marlin_qweight.shape),
+            marlin_qweight.dtype,
+        )
 
     # WEIGHT SCALES: Transpose, permute, convert to FP8-S0E5M3 format.
     # Match vLLM: convert to param_dtype before permute (nvfp4_marlin_process_scales
@@ -254,6 +355,13 @@ def prepare_fp4_layer_for_marlin(
     setattr(
         layer, weight_scale_attr, torch.nn.Parameter(weight_scale, requires_grad=False)
     )
+    if _log_this_layer:
+        logger.info(
+            "[NVFP4_MARLIN_DEBUG] prepare_fp4_layer_for_marlin layer#%d: "
+            "weight_scale after process shape=%s",
+            _nvfp4_marlin_prepare_count,
+            tuple(weight_scale.shape),
+        )
 
     # GLOBAL SCALE: Pre-adjust exponent bias for Marlin kernel
     weight_global_scale = getattr(layer, weight_global_scale_attr)
@@ -264,6 +372,14 @@ def prepare_fp4_layer_for_marlin(
         weight_global_scale_attr,
         torch.nn.Parameter(weight_global_scale, requires_grad=False),
     )
+    if _log_this_layer:
+        logger.info(
+            "[NVFP4_MARLIN_DEBUG] prepare_fp4_layer_for_marlin layer#%d DONE: "
+            "weight_global_scale shape=%s value=%s",
+            _nvfp4_marlin_prepare_count,
+            tuple(weight_global_scale.shape),
+            weight_global_scale.float().item() if weight_global_scale.numel() == 1 else weight_global_scale.float().tolist(),
+        )
 
     # BIAS (if present): Permute for Marlin's fast access pattern
     if hasattr(layer, "bias") and layer.bias is not None:
