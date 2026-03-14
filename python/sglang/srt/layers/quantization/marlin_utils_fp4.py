@@ -98,24 +98,24 @@ def nvfp4_marlin_process_global_scale(global_scale: torch.Tensor) -> torch.Tenso
 
     FP4 (E2M1) and FP16/BF16 have different exponent ranges. Pre-multiplying
     the global scale avoids repeated exponent bias computation during inference.
+
+    Using BF16's exponent_bias (126) would multiply by 2^119 and cause overflow
+    for typical weight_scale_2 values. Use FP16 formula (2^7) for the computation,
+    then convert back to the original dtype for the kernel.
     """
     assert global_scale.dtype in [
         torch.half,
         torch.bfloat16,
     ], f"global_scale dtype must be half or bfloat16, got {global_scale.dtype}"
+    out_dtype = global_scale.dtype
+    # Use FP16 for computation to avoid BF16 overflow (2^119)
+    global_scale = global_scale.to(torch.half)
     fp4_exponent = 2  # NVFP4 E2M1: 2 exponent bits
-    if global_scale.dtype == torch.half:
-        target_exponent = 5  # FP16: 5 exponent bits
-    else:  # bfloat16
-        target_exponent = 8  # BF16: 8 exponent bits
-    # exponent_bias_fp16 = 2^4 - 2^1 = 14
-    # exponent_bias_bf16 = 2^7 - 2^1 = 126
-    exponent_bias = 2 ** (target_exponent - 1) - 2 ** (fp4_exponent - 1)
-    # Subtract 7 because nvfp4_marlin_process_scales multiplies FP8 scales by
-    # 2**7 (to shift the exponent into the FP8-S0E5M3 encoding expected by the
-    # Marlin dequantization kernel).  Pre-dividing the global scale by 2**7
-    # here cancels that factor so the combined scale is numerically correct.
-    return global_scale * (2.0 ** (exponent_bias - 7))
+    target_exponent = 5  # FP16: 5 exponent bits
+    exponent_bias = 2 ** (target_exponent - 1) - 2 ** (fp4_exponent - 1)  # 14
+    # Subtract 7 because nvfp4_marlin_process_scales multiplies FP8 scales by 2**7.
+    result = global_scale * (2.0 ** (exponent_bias - 7))
+    return result.to(out_dtype)
 
 
 def apply_fp4_marlin_linear(
