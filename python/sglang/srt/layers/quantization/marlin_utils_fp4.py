@@ -144,9 +144,10 @@ def nvfp4_marlin_process_global_scale(global_scale: torch.Tensor) -> torch.Tenso
     FP4 (E2M1) and FP16/BF16 have different exponent ranges. Pre-multiplying
     the global scale avoids repeated exponent bias computation during inference.
 
-    Using BF16's exponent_bias (126) would multiply by 2^119 and cause overflow
-    for typical weight_scale_2 values. Use FP16 formula (2^7) for the computation,
-    then convert back to the original dtype for the kernel.
+    The exponent bias depends on the model dtype:
+      - FP16 (5 exp bits): bias = 14, multiplier = 2^7
+      - BF16 (8 exp bits): bias = 126, multiplier = 2^119
+    BF16 has sufficient range (max ~3.4e38) to hold the result without overflow.
     """
     assert global_scale.dtype in [
         torch.half,
@@ -162,13 +163,12 @@ def nvfp4_marlin_process_global_scale(global_scale: torch.Tensor) -> torch.Tenso
             global_scale.dtype,
             _val,
         )
-    out_dtype = global_scale.dtype
-    # Use FP16 for computation to avoid BF16 overflow (2^119)
-    global_scale = global_scale.to(torch.half)
-    fp4_exponent = 2  # NVFP4 E2M1: 2 exponent bits
-    target_exponent = 5  # FP16: 5 exponent bits
-    exponent_bias = 2 ** (target_exponent - 1) - 2 ** (fp4_exponent - 1)  # 14
-    # Subtract 7 because nvfp4_marlin_process_scales multiplies FP8 scales by 2**7.
+    fp4_exponent = 2
+    if global_scale.dtype == torch.half:
+        target_exponent = 5
+    elif global_scale.dtype == torch.bfloat16:
+        target_exponent = 8
+    exponent_bias = 2 ** (target_exponent - 1) - 2 ** (fp4_exponent - 1)
     result = global_scale * (2.0 ** (exponent_bias - 7))
     if _NVFP4_MARLIN_DEBUG and _nvfp4_marlin_prepare_count <= 3:
         _val = result.float().item() if result.numel() == 1 else result.float().tolist()
@@ -177,7 +177,7 @@ def nvfp4_marlin_process_global_scale(global_scale: torch.Tensor) -> torch.Tenso
             _nvfp4_marlin_prepare_count,
             _val,
         )
-    return result.to(out_dtype)
+    return result
 
 
 def apply_fp4_marlin_linear(
