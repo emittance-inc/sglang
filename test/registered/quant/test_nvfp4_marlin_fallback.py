@@ -1,9 +1,4 @@
-"""
-Test script for NVFP4 Marlin fallback on non-FP4 GPUs (SM75-SM89).
-
-This validates the Marlin fallback path that allows NVFP4-quantized models
-to run on GPUs without native FP4 hardware (RTX 3090, A100, etc.).
-"""
+"""Tests for NVFP4 Marlin fallback on non-Blackwell GPUs (SM75+)."""
 
 import logging
 import unittest
@@ -305,11 +300,7 @@ class TestNvfp4MarlinCorrectness(CustomTestCase):
 
     @staticmethod
     def _reference_dequant_fp4(packed_uint8: torch.Tensor, size_n: int, size_k: int):
-        """Dequantize FP4 E2M1 packed uint8 weights to float using the vLLM reference.
-
-        Each byte contains two FP4 nibbles. The dequant maps each nibble to FP8 E4M3
-        via bit manipulation, then converts to float and multiplies by 2^6.
-        """
+        """Dequantize FP4 E2M1 packed uint8 weights to float (vLLM reference)."""
         fp4 = packed_uint8  # (N, K//2) uint8
 
         # High nibble (bits [7:4]) → odd K indices
@@ -328,12 +319,7 @@ class TestNvfp4MarlinCorrectness(CustomTestCase):
         return weight_ref
 
     def test_marlin_gemm_matches_reference(self):
-        """Compare Marlin kernel output against Python reference dequantization.
-
-        Creates synthetic FP4 weights + FP8 scales + global_scale, computes
-        the expected output via Python dequant, then runs the Marlin kernel
-        and checks that the results are close.
-        """
+        """Compare Marlin kernel output against Python reference dequantization."""
         from sglang.srt.layers.quantization.marlin_utils import marlin_permute_scales
         from sglang.srt.layers.quantization.marlin_utils_fp4 import (
             FP4_MARLIN_GROUP_SIZE,

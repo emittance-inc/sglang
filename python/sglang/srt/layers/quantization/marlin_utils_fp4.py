@@ -1,22 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Adapted from https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/quantization/utils/marlin_utils_fp4.py
 
-"""
-NVFP4 Marlin fallback utilities for non-FP4 GPUs.
-
-On GPUs without native FP4 hardware (i.e., pre-Blackwell / SM < 100),
-NVFP4-quantized weights can still be used efficiently via the Marlin kernel.
-The weights remain in compressed FP4 format in GPU memory (no VRAM explosion),
-and the Marlin kernel handles FP4 dequantization in-flight using fast bitwise
-operations during tensor core matmul.
-
-Key differences from naive BF16 dequantization:
-  - Weights stay compressed (FP4 packed in uint8, 2 values per byte)
-  - Only the tiling layout is changed (gptq_marlin_repack)
-  - Scales are converted to a special FP8-S0E5M3 format for faster dequant
-  - Global scale is pre-adjusted with exponent bias
-  - Zero additional VRAM overhead from decompression
-"""
+"""NVFP4 Marlin fallback: run FP4-quantized models on non-Blackwell GPUs via Marlin kernel."""
 
 import logging
 from typing import Optional
@@ -47,10 +32,7 @@ FP4_MARLIN_GROUP_SIZE = 16
 
 
 def is_fp4_marlin_supported() -> bool:
-    """Check if the current GPU supports FP4 Marlin fallback (requires SM >= 75).
-
-    Marlin kernel is CUDA-only; ROCm/HIP is not supported.
-    """
+    """Check if the current GPU supports FP4 Marlin fallback (CUDA SM >= 75)."""
     if not _is_cuda:
         return False
     if torch.version.hip is not None:
@@ -62,11 +44,7 @@ def is_fp4_marlin_supported() -> bool:
 
 
 def should_use_fp4_marlin_fallback() -> bool:
-    """Check if NVFP4 Marlin fallback should be used instead of native FP4.
-
-    Returns True when (a) the GPU is not Blackwell (SM < 100) or forced via
-    SGLANG_FORCE_NVFP4_MARLIN, AND (b) the Marlin kernel is available (SM >= 75).
-    """
+    """True if non-Blackwell (or forced) AND Marlin kernel available (SM >= 75)."""
     from sglang.srt.environ import envs
     from sglang.srt.layers.quantization.fp8_utils import is_blackwell_supported
 
@@ -75,15 +53,10 @@ def should_use_fp4_marlin_fallback() -> bool:
 
 
 def nvfp4_marlin_process_scales(marlin_scales: torch.Tensor) -> torch.Tensor:
-    """Convert NVFP4 scales from FP8-S1E4M3 to special FP8-S0E5M3 format.
+    """Convert NVFP4 scales from FP8-S1E4M3 to FP8-S0E5M3 format for Marlin.
 
-    This transformation allows the Marlin kernel to perform faster dequantization
-    by bringing the exponent bias closer to zero (NVFP4 guarantees non-negative scales).
-
-    The intermediate (scale * 128).view(int16) << 1 may wrap around for large scales
-    (e.g. 448 * 128 = 57344, which as int16 after <<1 wraps to negative), but the BIT
-    PATTERN is preserved correctly. The kernel reads the raw bytes and does its own bit
-    manipulation, so the int16 sign interpretation is irrelevant.
+    The int16 <<1 may wrap for large scales (e.g. 448*128=57344), but the BIT
+    PATTERN is preserved correctly — the kernel reads raw bytes, not int16 values.
     """
     marlin_scales = marlin_scales.to(torch.half)
 
@@ -106,16 +79,7 @@ def nvfp4_marlin_process_scales(marlin_scales: torch.Tensor) -> torch.Tensor:
 
 
 def nvfp4_marlin_process_global_scale(global_scale: torch.Tensor) -> torch.Tensor:
-    """Pre-adjust NVFP4 global scale with exponent bias for the Marlin kernel.
-
-    FP4 (E2M1) and FP16/BF16 have different exponent ranges. Pre-multiplying
-    the global scale avoids repeated exponent bias computation during inference.
-
-    The exponent bias depends on the model dtype:
-      - FP16 (5 exp bits): bias = 14, multiplier = 2^7
-      - BF16 (8 exp bits): bias = 126, multiplier = 2^119
-    BF16 has sufficient range (max ~3.4e38) to hold the result without overflow.
-    """
+    """Pre-adjust global scale with FP4/FP16/BF16 exponent bias for Marlin kernel."""
     assert global_scale.dtype in [
         torch.half,
         torch.bfloat16,
@@ -140,25 +104,7 @@ def apply_fp4_marlin_linear(
     bias: Optional[torch.Tensor] = None,
     use_fp32_reduce: bool = USE_FP32_REDUCE_DEFAULT,
 ) -> torch.Tensor:
-    """Apply FP4-quantized linear using the Marlin kernel (non-FP4 GPU fallback).
-
-    Weights stay compressed in FP4 format. The Marlin kernel handles dequantization
-    in-flight via bitwise operations during tensor core operations.
-
-    Args:
-        input: Activation tensor [M, K] in FP16/BF16.
-        weight: Marlin-repacked FP4 weight tensor.
-        weight_scale: Processed per-group FP8 scale tensor.
-        weight_global_scale: Pre-adjusted global FP32 scale tensor.
-        workspace: Marlin workspace tensor.
-        size_n: Output dimension (N).
-        size_k: Input dimension (K).
-        bias: Optional bias tensor.
-        use_fp32_reduce: Whether to use FP32 reduction.
-
-    Returns:
-        Output tensor [M, N] in same dtype as input.
-    """
+    """Apply FP4-quantized linear via Marlin kernel (non-Blackwell fallback)."""
     reshaped_x = input.reshape(-1, input.shape[-1])
     out_shape = input.shape[:-1] + (size_n,)
 
@@ -200,18 +146,7 @@ def prepare_fp4_layer_for_marlin(
     weight_scale_attr: str = "weight_scale",
     weight_global_scale_attr: str = "weight_global_scale",
 ) -> None:
-    """Repack NVFP4 linear layer weights into Marlin format for non-FP4 GPU.
-
-    The FP4 weights remain compressed (no VRAM explosion). Only the tile layout
-    changes to match Marlin's access pattern. Scales are converted to the special
-    FP8-S0E5M3 format required by the Marlin dequantization kernel.
-
-    Args:
-        layer: The linear layer to prepare in-place.
-        weight_attr: Attribute name of the packed FP4 weight tensor (N, K//2) uint8.
-        weight_scale_attr: Attribute name of the per-group FP8 scale (N, K//16) fp8.
-        weight_global_scale_attr: Attribute name of the global scale scalar fp16/bf16.
-    """
+    """Repack NVFP4 linear layer weights into Marlin format in-place."""
     logger.warning_once(
         "Your GPU does not have native support for FP4 computation but "
         "FP4 quantization is being used. Weight-only FP4 compression will "
@@ -234,9 +169,7 @@ def prepare_fp4_layer_for_marlin(
     # WORKSPACE
     layer.marlin_workspace = marlin_make_workspace(device)
 
-    # WEIGHT: Repack from NVFP4 native layout to Marlin tile layout.
-    # Native: (N, K//2) packed uint8 -> Marlin: (K//16, N*16//pack_factor)
-    # Weights stay in FP4 packed format; only tile organization changes.
+    # WEIGHT: repack from NVFP4 native layout to Marlin tile layout
     perm = torch.empty(0, dtype=torch.int, device=device)
     qweight = weight.data.view(torch.int32).T.contiguous()
     del weight
@@ -250,9 +183,7 @@ def prepare_fp4_layer_for_marlin(
     del qweight
     setattr(layer, weight_attr, torch.nn.Parameter(marlin_qweight, requires_grad=False))
 
-    # WEIGHT SCALES: Transpose, permute, convert to FP8-S0E5M3 format.
-    # Match vLLM: convert to param_dtype before permute (nvfp4_marlin_process_scales
-    # converts to half first for the comparison, so FP8->param_dtype here is fine).
+    # WEIGHT SCALES: transpose, permute, convert to FP8-S0E5M3
     weight_scale = getattr(layer, weight_scale_attr)
     weight_scale = weight_scale.data.T.contiguous().to(param_dtype)
     weight_scale = marlin_permute_scales(
@@ -284,22 +215,7 @@ def prepare_fp4_layer_for_marlin(
 
 
 def prepare_moe_fp4_layer_for_marlin(layer: torch.nn.Module) -> None:
-    """Repack NVFP4 MoE weights into Marlin format for non-FP4 GPU fallback.
-
-    Each expert's weights are repacked individually. FP4 compression is preserved
-    in memory; only the tile layout changes for the Marlin kernel's access pattern.
-
-    Expects layer attributes:
-        w13_weight: [E, 2*intermediate, hidden//2] uint8 (gate+up proj, packed FP4)
-        w2_weight:  [E, hidden, intermediate//2] uint8 (down proj, packed FP4)
-        w13_weight_scale: [E, 2*intermediate, hidden//16] float8_e4m3fn
-        w2_weight_scale:  [E, hidden, intermediate//16] float8_e4m3fn
-        w13_weight_scale_2: [E] or [E, 2] float32 (per-expert global scale)
-        w2_weight_scale_2:  [E] float32 (per-expert global scale)
-        layer.intermediate_size_per_partition: int
-        layer.params_dtype: torch.dtype
-        layer.moe_runner_config.is_gated: bool
-    """
+    """Repack NVFP4 MoE weights into Marlin format in-place (per-expert)."""
     logger.warning_once(
         "Your GPU does not have native support for FP4 computation but "
         "FP4 quantization is being used. Weight-only FP4 compression will "
