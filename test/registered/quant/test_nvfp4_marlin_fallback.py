@@ -121,13 +121,13 @@ class TestNvfp4MarlinLinear(CustomTestCase):
         self.assertIsInstance(scale_mult, float)
         self.assertEqual(processed.dtype, torch.float8_e4m3fn)
 
-        # Test overflow case: scale > 256 causes int16 overflow without normalization.
+        # Test overflow case: scale > 255 causes int16 overflow without normalization.
         # With fix, scale_multiplier > 1 and processed scales stay non-negative.
         large_scale = torch.full(
             (N, K_div_group), 448.0, dtype=self.dtype, device=self.device
         )
         proc_large, mult = nvfp4_marlin_process_scales(large_scale)
-        self.assertGreater(mult, 1.0, "scale_multiplier should be > 1 when max > 256")
+        self.assertGreater(mult, 1.0, "scale_multiplier should be > 1 when max > 255")
         proc_f32 = proc_large.to(torch.float32)
         self.assertGreaterEqual(
             proc_f32.min().item(), -1e-6,

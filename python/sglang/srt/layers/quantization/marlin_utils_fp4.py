@@ -103,12 +103,12 @@ def nvfp4_marlin_process_scales(
             "to a special FP8-S0E5M3 format to speed up dequantization."
         )
 
-    # Avoid int16 overflow: (scale * 128) overflows when scale > 256.
-    # Normalize scales to max 256 and compensate via global_scale.
+    # Avoid int16 overflow: (scale * 128) overflows when scale > 255 (32768 > 32767).
+    # Normalize scales to max 255 and compensate via global_scale.
     scale_max = marlin_scales.float().max().item()
     scale_multiplier = 1.0
-    if scale_max > 256.0:
-        scale_multiplier = scale_max / 256.0
+    if scale_max > 255.0:
+        scale_multiplier = scale_max / 255.0
         marlin_scales = marlin_scales / scale_multiplier
 
     # Reorder columns to match Marlin's FP8 dequantization layout
