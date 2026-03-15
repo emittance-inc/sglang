@@ -1538,7 +1538,9 @@ __global__ void Marlin(
       }
 
       if constexpr (w_type == host::kFE2M1f && s_type == host::kFE4M3fn) {
-        res = __hmul2(res, global_scale);
+        if (!mul_topk_weights) {
+          res = __hmul2(res, global_scale);
+        }
       }
       if (has_bias && last) {
         scalar_t2 tmp_bias = b_bias[0];
