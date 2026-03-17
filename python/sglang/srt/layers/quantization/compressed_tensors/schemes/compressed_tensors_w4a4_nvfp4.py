@@ -161,11 +161,7 @@ class CompressedTensorsW4A4Fp4(CompressedTensorsLinearScheme):
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if getattr(layer, "use_marlin_fallback", False):
-            from sglang.srt.layers.quantization.marlin_utils_fp4 import (
-                apply_fp4_marlin_linear,
-            )
-
-            return apply_fp4_marlin_linear(
+            return torch.ops.sglang.apply_fp4_marlin_linear(
                 input=x,
                 weight=layer.weight_packed,
                 weight_scale=layer.weight_scale,
