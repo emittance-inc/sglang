@@ -561,5 +561,22 @@ class TestModelOptLoaderIntegration(CustomTestCase):
         self.assertEqual(server_args.model_path, "TinyLlama/TinyLlama-1.1B-Chat-v1.0")
 
 
+class TestModelOptMixedPrecisionConfig(CustomTestCase):
+    """Tests for ModelOpt mixed-precision / NVFP4 min capability.
+
+    NVFP4 supports SM75+ (Turing) via Marlin FP4 fallback; native FP4 requires SM100.
+    get_min_capability() returns 75 so models run on T4 and newer GPUs.
+    """
+
+    def test_mixed_precision_uses_nvfp4_min_capability(self):
+        """Verify NVFP4 min capability is at least 75 (SM75+ Marlin fallback)."""
+        from sglang.srt.layers.quantization.modelopt_quant import ModelOptFp4Config
+
+        cap = ModelOptFp4Config.get_min_capability()
+        self.assertGreaterEqual(
+            cap, 75, f"NVFP4 requires SM75+ (Marlin fallback); got min_capability={cap}"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

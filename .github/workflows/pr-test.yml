@@ -719,7 +719,12 @@ jobs:
 
           for bench_file in bench_*.py; do
             echo "Testing $bench_file..."
-            timeout 60 python3 "$bench_file" || echo "Warning: $bench_file timed out or failed, continuing..."
+            if [[ "$bench_file" == *marlin* ]]; then
+              BENCH_TIMEOUT=300
+            else
+              BENCH_TIMEOUT=120
+            fi
+            timeout $BENCH_TIMEOUT python3 "$bench_file" || echo "Warning: $bench_file timed out or failed, continuing..."
             echo "Completed $bench_file"
             echo "---"
           done
