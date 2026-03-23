@@ -226,10 +226,19 @@ class FusedMoE(torch.nn.Module):
         self.use_presharded_weights = use_presharded_weights
 
         self.use_triton_kernels = get_moe_runner_backend().is_triton_kernels()
-        self.use_flashinfer_trtllm_moe = (
+
+        _is_trtllm_backend = (
             get_moe_runner_backend().is_flashinfer_trtllm()
             or get_moe_runner_backend().is_flashinfer_trtllm_routed()
         )
+        if _is_trtllm_backend:
+            from sglang.srt.layers.quantization.marlin_utils_fp4 import (
+                should_use_fp4_marlin_fallback,
+            )
+
+            _is_trtllm_backend = not should_use_fp4_marlin_fallback()
+
+        self.use_flashinfer_trtllm_moe = _is_trtllm_backend
 
         # flashinfer_trtllm kernel requires intermediate_size to be a multiple of 128
         # Pad the intermediate_size_per_partition if necessary

@@ -316,7 +316,14 @@ class TopK(MultiPlatformOp):
             get_moe_runner_backend().is_flashinfer_trtllm()
             or get_moe_runner_backend().is_flashinfer_mxfp4()
         ):
-            output_format = TopKOutputFormat.BYPASSED
+            from sglang.srt.layers.quantization.marlin_utils_fp4 import (
+                should_use_fp4_marlin_fallback,
+            )
+
+            if should_use_fp4_marlin_fallback():
+                output_format = TopKOutputFormat.STANDARD
+            else:
+                output_format = TopKOutputFormat.BYPASSED
         else:
             output_format = TopKOutputFormat.STANDARD
 
