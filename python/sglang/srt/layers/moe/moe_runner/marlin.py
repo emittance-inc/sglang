@@ -11,6 +11,8 @@ from sglang.srt.layers.moe.moe_runner.base import (
     RunnerInput,
     RunnerOutput,
     register_fused_func,
+    register_post_permute,
+    register_pre_permute,
 )
 from sglang.srt.layers.moe.utils import MoeRunnerBackend
 
@@ -122,4 +124,36 @@ def fused_experts_none_to_marlin(
 
     return StandardCombineInput(
         hidden_states=output,
+    )
+
+
+@register_pre_permute("standard", "marlin")
+def pre_permute_standard_to_marlin(
+    dispatch_output: StandardDispatchOutput,
+    quant_info: MarlinMoeQuantInfo,
+    runner_config: MoeRunnerConfig,
+    running_state: dict,
+) -> MarlinRunnerInput:
+    hidden_states = dispatch_output.hidden_states
+    topk_output = dispatch_output.topk_output
+
+    return MarlinRunnerInput(
+        hidden_states=hidden_states,
+        topk_weights=topk_output.topk_weights,
+        topk_ids=topk_output.topk_ids,
+        router_logits=topk_output.router_logits,
+    )
+
+
+@register_post_permute("marlin", "standard")
+def post_permute_marlin_to_standard(
+    runner_output: MarlinRunnerOutput,
+    quant_info: MarlinMoeQuantInfo,
+    runner_config: MoeRunnerConfig,
+    running_state: dict,
+) -> StandardCombineInput:
+    from sglang.srt.layers.moe.token_dispatcher.standard import StandardCombineInput
+
+    return StandardCombineInput(
+        hidden_states=runner_output.hidden_states,
     )

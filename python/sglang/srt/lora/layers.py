@@ -717,23 +717,57 @@ class FusedMoEWithLoRA(BaseLayerWithLoRA):
             base_layer, "intermediate_size_per_partition", None
         )
 
-        # initialize triton_lora moe runner for batches with lora enabled
         from sglang.srt.layers.moe.moe_runner.runner import MoeRunner
-        from sglang.srt.layers.moe.moe_runner.triton import TritonMoeQuantInfo
+
+        runner_backend = base_layer.quant_method.runner.runner_backend
 
         self._lora_runner = MoeRunner(
-            base_layer.quant_method.runner.runner_backend,
+            runner_backend,
             base_layer.moe_runner_config,
             lora_enabled=True,
         )
 
         # Pre-compute quant info for efficiency (weights don't change during inference)
-        self._quant_info = TritonMoeQuantInfo(
-            w13_weight=base_layer.w13_weight,
-            w2_weight=base_layer.w2_weight,
-            b13=getattr(base_layer, "w13_weight_bias", None),
-            b2=getattr(base_layer, "w2_weight_bias", None),
-        )
+        self._quant_info = self._build_quant_info(base_layer, runner_backend)
+
+    @staticmethod
+    def _build_quant_info(base_layer, runner_backend):
+        """Build the appropriate MoeQuantInfo based on runner backend."""
+        if runner_backend.is_marlin():
+            from sglang.srt.layers.moe.moe_runner.marlin import MarlinMoeQuantInfo
+
+            return MarlinMoeQuantInfo(
+                w13_qweight=base_layer.w13_qweight,
+                w2_qweight=base_layer.w2_qweight,
+                w13_scales=base_layer.w13_scales,
+                w2_scales=base_layer.w2_scales,
+                w13_g_idx_sort_indices=getattr(
+                    base_layer, "w13_g_idx_sort_indices", None
+                ),
+                w2_g_idx_sort_indices=getattr(
+                    base_layer, "w2_g_idx_sort_indices", None
+                ),
+                weight_bits=getattr(
+                    base_layer.quant_method, "quant_config", None
+                )
+                and base_layer.quant_method.quant_config.weight_bits
+                or 4,
+                w13_g_idx=getattr(base_layer, "w13_g_idx", None),
+                w2_g_idx=getattr(base_layer, "w2_g_idx", None),
+                is_k_full=getattr(base_layer.quant_method, "is_k_full", True),
+                w13_qzeros=getattr(base_layer, "w13_qzeros", None),
+                w2_qzeros=getattr(base_layer, "w2_qzeros", None),
+                expert_map=getattr(base_layer, "expert_map", None),
+            )
+        else:
+            from sglang.srt.layers.moe.moe_runner.triton import TritonMoeQuantInfo
+
+            return TritonMoeQuantInfo(
+                w13_weight=base_layer.w13_weight,
+                w2_weight=base_layer.w2_weight,
+                b13=getattr(base_layer, "w13_weight_bias", None),
+                b2=getattr(base_layer, "w2_weight_bias", None),
+            )
 
     def set_lora_info(
         self,
@@ -820,10 +854,8 @@ class FusedMoEWithLoRA(BaseLayerWithLoRA):
             hidden_states=hidden_states, topk_output=topk_output
         )
 
-        # Use pre-computed quant info (doesn't change so not sure why we need to pass it in every time)
         quant_info = self._quant_info
 
-        # Run the only lora moe runner (Triton)
         combine_input = self._lora_runner.run(
             dispatch_output, quant_info, lora_info=lora_info
         )
