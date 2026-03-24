@@ -736,11 +736,30 @@ class FusedMoEWithLoRA(BaseLayerWithLoRA):
         if runner_backend.is_marlin():
             from sglang.srt.layers.moe.moe_runner.marlin import MarlinMoeQuantInfo
 
+            # NVFP4 Marlin keeps weights as w13_weight / w13_weight_scale / w13_weight_scale_2,
+            # while GPTQ/AWQ Marlin uses w13_qweight / w13_scales.
+            is_nvfp4 = not hasattr(base_layer, "w13_qweight")
+
+            if is_nvfp4:
+                w13_qw = base_layer.w13_weight
+                w2_qw = base_layer.w2_weight
+                w13_sc = base_layer.w13_weight_scale
+                w2_sc = base_layer.w2_weight_scale
+                w13_gs = getattr(base_layer, "w13_weight_scale_2", None)
+                w2_gs = getattr(base_layer, "w2_weight_scale_2", None)
+            else:
+                w13_qw = base_layer.w13_qweight
+                w2_qw = base_layer.w2_qweight
+                w13_sc = base_layer.w13_scales
+                w2_sc = base_layer.w2_scales
+                w13_gs = None
+                w2_gs = None
+
             return MarlinMoeQuantInfo(
-                w13_qweight=base_layer.w13_qweight,
-                w2_qweight=base_layer.w2_qweight,
-                w13_scales=base_layer.w13_scales,
-                w2_scales=base_layer.w2_scales,
+                w13_qweight=w13_qw,
+                w2_qweight=w2_qw,
+                w13_scales=w13_sc,
+                w2_scales=w2_sc,
                 w13_g_idx_sort_indices=getattr(
                     base_layer, "w13_g_idx_sort_indices", None
                 ),
@@ -748,15 +767,16 @@ class FusedMoEWithLoRA(BaseLayerWithLoRA):
                     base_layer, "w2_g_idx_sort_indices", None
                 ),
                 weight_bits=getattr(
-                    base_layer.quant_method, "quant_config", None
-                )
-                and base_layer.quant_method.quant_config.weight_bits
-                or 4,
+                    getattr(base_layer.quant_method, "quant_config", None),
+                    "weight_bits", 4,
+                ),
                 w13_g_idx=getattr(base_layer, "w13_g_idx", None),
                 w2_g_idx=getattr(base_layer, "w2_g_idx", None),
                 is_k_full=getattr(base_layer.quant_method, "is_k_full", True),
                 w13_qzeros=getattr(base_layer, "w13_qzeros", None),
                 w2_qzeros=getattr(base_layer, "w2_qzeros", None),
+                w13_global_scale=w13_gs,
+                w2_global_scale=w2_gs,
                 expert_map=getattr(base_layer, "expert_map", None),
             )
         else:

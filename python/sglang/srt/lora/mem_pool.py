@@ -275,22 +275,8 @@ class LoRAMemoryPool:
             for module_name in target_modules:
                 # Special handling for ambiguous target modules that can be in different contexts
                 ambiguous_modules = {"gate_up_proj", "down_proj"}
-                if module_name in ambiguous_modules and has_shared_experts and has_moe:
-                    # Allocate separate buffers for shared and MoE contexts
-                    # Shared expert version (3D)
-                    shared_key = module_name
-                    buffer[shared_key] = [
-                        torch.empty(
-                            get_lora_shape_fn(
-                                module_name, base_model, self.max_lora_rank, idx
-                            ),
-                            dtype=self.dtype,
-                            device=device,
-                        )
-                        for idx in range(self.num_layer)
-                    ]
-
-                    # MoE expert version (4D)
+                if module_name in ambiguous_modules and has_moe:
+                    # MoE expert version (4D) - needed for any MoE model
                     moe_key = f"{module_name}_moe"
                     buffer[moe_key] = [
                         torch.empty(
@@ -302,7 +288,21 @@ class LoRAMemoryPool:
                         )
                         for idx in range(self.num_layer)
                     ]
-                else:
+
+                    if has_shared_experts:
+                        # Also need shared expert version (3D) when model has shared experts
+                        shared_key = module_name
+                        buffer[shared_key] = [
+                            torch.empty(
+                                get_lora_shape_fn(
+                                    module_name, base_model, self.max_lora_rank, idx
+                                ),
+                                dtype=self.dtype,
+                                device=device,
+                            )
+                            for idx in range(self.num_layer)
+                        ]
+                elif module_name not in ambiguous_modules or not has_moe:
                     # Standard allocation for unambiguous modules
                     buffer[module_name] = [
                         torch.empty(
@@ -594,13 +594,29 @@ class LoRAMemoryPool:
                 target_buffer = self.A_buffer[name][layer_id]
 
                 if name in ["gate_up_proj_moe", "down_proj_moe"]:
+                    if weights is None:
+                        continue
                     # MoE: multiple tensors per module (one per expert)
                     for expert_id, expert_weight in weights.items():
-                        # Buffer shape: [num_loras, num_experts, max_rank, hidden_dim]
-                        buffer_view = target_buffer[
-                            buffer_id, expert_id, : lora_rank * c, :
-                        ]
-                        load_lora_weight_tensor(buffer_view, expert_weight)
+                        if name == "gate_up_proj_moe":
+                            # Buffer shape: [num_loras, num_experts, max_rank*2, hidden_dim]
+                            # The kernel splits at max_rank, so gate must go at rows [0:rank]
+                            # and up at rows [max_rank:max_rank+rank].
+                            max_rank = target_buffer.shape[2] // c
+                            gate_view = target_buffer[
+                                buffer_id, expert_id, :lora_rank, :
+                            ]
+                            up_view = target_buffer[
+                                buffer_id, expert_id, max_rank : max_rank + lora_rank, :
+                            ]
+                            load_lora_weight_tensor(gate_view, expert_weight[:lora_rank, :])
+                            load_lora_weight_tensor(up_view, expert_weight[lora_rank : 2 * lora_rank, :])
+                        else:
+                            # down_proj_moe: no stacking, load contiguously
+                            buffer_view = target_buffer[
+                                buffer_id, expert_id, :lora_rank, :
+                            ]
+                            load_lora_weight_tensor(buffer_view, expert_weight)
                 else:
                     # Standard: single tensor per module
                     c = get_stacked_multiply(name)
@@ -611,6 +627,8 @@ class LoRAMemoryPool:
                 target_buffer = self.B_buffer[name][layer_id]
 
                 if name in ["gate_up_proj_moe", "down_proj_moe"]:
+                    if weights is None:
+                        continue
                     # MoE: multiple tensors per module (one per expert)
                     for expert_id, expert_weight in weights.items():
                         # Buffer shape: [num_loras, num_experts, intermediate_dim, max_rank]

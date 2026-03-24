@@ -578,6 +578,7 @@ class MarlinRunnerCoreWithLoRA(MoeLoRADeltaMixin, MoeRunnerCore):
     ):
         from sglang.srt.layers.moe.fused_moe_triton import moe_align_block_size
         from sglang.srt.layers.moe.fused_moe_triton.fused_marlin_moe import (
+            _get_fp4_scalar_type,
             get_scalar_type,
         )
         from sglang.srt.layers.moe.moe_runner.marlin import (
@@ -632,8 +633,13 @@ class MarlinRunnerCoreWithLoRA(MoeLoRADeltaMixin, MoeRunnerCore):
 
         workspace = marlin_make_workspace(hidden_states.device, max_blocks_per_sm=4)
 
-        scalar_type1 = get_scalar_type(num_bits, w1_zeros is not None)
-        scalar_type2 = get_scalar_type(num_bits, w2_zeros is not None)
+        is_fp4_marlin = getattr(quant_info, "w13_global_scale", None) is not None
+        if is_fp4_marlin:
+            scalar_type1 = _get_fp4_scalar_type()
+            scalar_type2 = _get_fp4_scalar_type()
+        else:
+            scalar_type1 = get_scalar_type(num_bits, w1_zeros is not None)
+            scalar_type2 = get_scalar_type(num_bits, w2_zeros is not None)
 
         use_atomic_add = (
             hidden_states.dtype == torch.half
