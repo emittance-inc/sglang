@@ -741,6 +741,8 @@ class ServerArgs:
         """
         Orchestrates the handling of various server arguments, ensuring proper configuration and validation.
         """
+        import logging as _dbg_lg, traceback as _dbg_tb
+        _dbg_lg.getLogger("sglang.server_args").warning("DEBUG __post_init__ model_path=%s\n%s", self.model_path, "".join(_dbg_tb.format_stack()[-6:]))
 
         # Normalize load balancing defaults early (before dummy-model short-circuit).
         self._handle_load_balance_method()

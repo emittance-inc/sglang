@@ -2546,12 +2546,19 @@ def has_hf_quant_config(model_path: str) -> bool:
     if os.path.exists(os.path.join(model_path, "hf_quant_config.json")):
         return True
 
+    # If model_path is a local directory, no need to check HF Hub
+    if os.path.isdir(model_path):
+        return False
+
     from huggingface_hub import try_to_load_from_cache
 
     # Check if the model_path is a HuggingFace model ID and exists locally
-    result = try_to_load_from_cache(model_path, "hf_quant_config.json")
-    if isinstance(result, str):
-        return True
+    try:
+        result = try_to_load_from_cache(model_path, "hf_quant_config.json")
+        if isinstance(result, str):
+            return True
+    except Exception:
+        pass
 
     # Check if the model_path is a remote URL and exists on the HuggingFace Hub
     try:
