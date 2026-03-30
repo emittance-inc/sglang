@@ -717,23 +717,62 @@ class FusedMoEWithLoRA(BaseLayerWithLoRA):
             base_layer, "intermediate_size_per_partition", None
         )
 
-        # initialize triton_lora moe runner for batches with lora enabled
+        # initialize lora moe runner for batches with lora enabled
         from sglang.srt.layers.moe.moe_runner.runner import MoeRunner
-        from sglang.srt.layers.moe.moe_runner.triton import TritonMoeQuantInfo
 
+        self._runner_backend = base_layer.quant_method.runner.runner_backend
         self._lora_runner = MoeRunner(
-            base_layer.quant_method.runner.runner_backend,
+            self._runner_backend,
             base_layer.moe_runner_config,
             lora_enabled=True,
         )
 
-        # Pre-compute quant info for efficiency (weights don't change during inference)
-        self._quant_info = TritonMoeQuantInfo(
-            w13_weight=base_layer.w13_weight,
-            w2_weight=base_layer.w2_weight,
-            b13=getattr(base_layer, "w13_weight_bias", None),
-            b2=getattr(base_layer, "w2_weight_bias", None),
-        )
+        # Lazy quant info: Marlin attributes (e.g. w13_weight_scale_2) are set
+        # during process_weights_after_loading(), which runs after __init__().
+        self.__quant_info = None
+
+    @property
+    def _quant_info(self):
+        if self.__quant_info is None:
+            self.__quant_info = self._build_quant_info()
+        return self.__quant_info
+
+    def _build_quant_info(self):
+        base_layer = self.base_layer
+        if self._runner_backend.is_marlin():
+            from sglang.srt.layers.moe.moe_runner.marlin import MarlinMoeQuantInfo
+
+            expert_map = None
+            global_num_experts = -1
+            if hasattr(base_layer, "dispatcher") and hasattr(
+                base_layer.dispatcher, "local_expert_mapping"
+            ):
+                expert_map = base_layer.dispatcher.local_expert_mapping
+                if expert_map is not None:
+                    global_num_experts = base_layer.num_experts
+
+            return MarlinMoeQuantInfo(
+                w13_qweight=base_layer.w13_weight,
+                w2_qweight=base_layer.w2_weight,
+                w13_scales=base_layer.w13_weight_scale,
+                w2_scales=base_layer.w2_weight_scale,
+                w13_g_idx_sort_indices=None,
+                w2_g_idx_sort_indices=None,
+                weight_bits=4,
+                w13_global_scale=getattr(base_layer, "w13_weight_scale_2", None),
+                w2_global_scale=getattr(base_layer, "w2_weight_scale_2", None),
+                expert_map=expert_map,
+                global_num_experts=global_num_experts,
+            )
+        else:
+            from sglang.srt.layers.moe.moe_runner.triton import TritonMoeQuantInfo
+
+            return TritonMoeQuantInfo(
+                w13_weight=base_layer.w13_weight,
+                w2_weight=base_layer.w2_weight,
+                b13=getattr(base_layer, "w13_weight_bias", None),
+                b2=getattr(base_layer, "w2_weight_bias", None),
+            )
 
     def set_lora_info(
         self,

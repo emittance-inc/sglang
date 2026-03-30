@@ -48,7 +48,14 @@ class MoeRunner:
         elif runner_backend.is_deep_gemm():
             self.runner_core = DeepGemmRunnerCore(config)
         elif runner_backend.is_marlin():
-            self.runner_core = None  # Marlin only supports fused path
+            if lora_enabled:
+                from sglang.srt.lora.marlin_lora_moe_runner import (
+                    MarlinRunnerCoreWithLoRA,
+                )
+
+                self.runner_core = MarlinRunnerCoreWithLoRA(config)
+            else:
+                self.runner_core = None  # Marlin only supports fused path
         elif (
             runner_backend.is_flashinfer_trtllm()
             or runner_backend.is_flashinfer_trtllm_routed()
