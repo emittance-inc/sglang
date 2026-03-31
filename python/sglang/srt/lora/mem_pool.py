@@ -274,24 +274,28 @@ class LoRAMemoryPool:
             # Shape functions automatically handle both 3D (standard) and 4D (MoE)
             target_modules = target_modules - set(EMBEDDING_NAMES)
             for module_name in target_modules:
-                # Special handling for ambiguous target modules that can be in different contexts
-                ambiguous_modules = {"gate_up_proj", "down_proj"}
-                if module_name in ambiguous_modules and has_shared_experts and has_moe:
-                    # Allocate separate buffers for shared and MoE contexts
-                    # Shared expert version (3D)
-                    shared_key = module_name
-                    buffer[shared_key] = [
-                        torch.empty(
-                            get_lora_shape_fn(
-                                module_name, base_model, self.max_lora_rank, idx
-                            ),
-                            dtype=self.dtype,
-                            device=device,
-                        )
-                        for idx in range(self.num_layer)
-                    ]
+                # Special handling for modules that can target MoE expert layers
+                moe_eligible_modules = {"gate_up_proj", "down_proj"}
+                if module_name in moe_eligible_modules and has_moe:
+                    if has_shared_experts:
+                        # Model has both shared experts and MoE:
+                        # allocate standard 3D buffer for shared experts
+                        shared_key = module_name
+                        buffer[shared_key] = [
+                            torch.empty(
+                                get_lora_shape_fn(
+                                    module_name,
+                                    base_model,
+                                    self.max_lora_rank,
+                                    idx,
+                                ),
+                                dtype=self.dtype,
+                                device=device,
+                            )
+                            for idx in range(self.num_layer)
+                        ]
 
-                    # MoE expert version (4D)
+                    # MoE expert version (4D) — always needed when has_moe
                     moe_key = f"{module_name}_moe"
                     buffer[moe_key] = [
                         torch.empty(
@@ -593,6 +597,10 @@ class LoRAMemoryPool:
                 target_buffer = self.A_buffer[name][layer_id]
 
                 if name in ["gate_up_proj_moe", "down_proj_moe"]:
+                    if weights is None:
+                        # No MoE LoRA weights for this layer — zero the buffer
+                        target_buffer[buffer_id].zero_()
+                        continue
                     # MoE: multiple tensors per module (one per expert)
                     for expert_id, expert_weight in weights.items():
                         # Buffer shape: [num_loras, num_experts, max_rank, hidden_dim]
@@ -610,6 +618,9 @@ class LoRAMemoryPool:
                 target_buffer = self.B_buffer[name][layer_id]
 
                 if name in ["gate_up_proj_moe", "down_proj_moe"]:
+                    if weights is None:
+                        target_buffer[buffer_id].zero_()
+                        continue
                     # MoE: multiple tensors per module (one per expert)
                     for expert_id, expert_weight in weights.items():
                         # Buffer shape: [num_loras, num_experts, intermediate_dim, max_rank]

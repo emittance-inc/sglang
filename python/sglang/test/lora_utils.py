@@ -77,6 +77,9 @@ MOE_LORA_TEST_PROMPTS = [
 MOE_BASE_MODEL_PATH = "Qwen/Qwen1.5-MoE-A2.7B"
 MOE_LORA_PATH = "jonahbernard/sglang-lora-moe-test-qwen1.5-MoE-A2.7B"
 
+QWEN3_MOE_BASE_MODEL_PATH = "Qwen/Qwen3-30B-A3B"
+QWEN3_MOE_NVFP4_MODEL_PATH = "nvidia/Qwen3-30B-A3B-NVFP4"
+
 
 CI_LORA_MODELS = [
     LoRAModelCase(
