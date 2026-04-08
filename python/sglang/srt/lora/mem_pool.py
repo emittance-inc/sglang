@@ -241,7 +241,15 @@ class LoRAMemoryPool:
             module_name, self.base_hf_config, base_model, layer_idx
         )
         if self.tp_size > 1 and module_name not in ROW_PARALLELISM_LINEAR_LORA_NAMES:
-            output_dim = divide(output_dim, self.tp_size)
+            if module_name == "qkv_proj":
+                # The naive `output_dim / tp_size` divide doesn't account for
+                # KV head replication when num_kv_heads < tp_size (GQA models
+                # like Qwen3 with 4 KV heads on 8 ranks). Look up the actual
+                # per-rank q + 2*kv shard sizes from the base model's
+                # QKVParallelLinear layer instead.
+                output_dim = self._get_qkv_per_rank_output_dim(base_model)
+            else:
+                output_dim = divide(output_dim, self.tp_size)
 
         # Check if MoE module and return appropriate shape
         if self.is_moe_module(module_name):
@@ -252,6 +260,25 @@ class LoRAMemoryPool:
             return (self.max_loras_per_batch, expert_dim, output_dim, max_lora_dim)
         else:
             return (self.max_loras_per_batch, output_dim, max_lora_dim)
+
+    def _get_qkv_per_rank_output_dim(self, base_model: torch.nn.Module) -> int:
+        """Find the first QKVParallelLinear in `base_model` and return its
+        per-rank output dim (q_proj_shard_size + 2 * kv_proj_shard_size).
+
+        This is needed because the naive `q_dim_total / tp_size` doesn't
+        match the actual sharded layout for GQA models where the number of
+        KV heads is smaller than the TP size and KV heads get replicated
+        across TP ranks.
+        """
+        from sglang.srt.layers.linear import QKVParallelLinear
+
+        for module in base_model.modules():
+            if isinstance(module, QKVParallelLinear):
+                return module.q_proj_shard_size + 2 * module.kv_proj_shard_size
+        raise RuntimeError(
+            "Could not find a QKVParallelLinear layer in the base model "
+            "to compute per-rank qkv_proj LoRA buffer shape."
+        )
 
     def get_embedding_lora_B_shape(
         self,

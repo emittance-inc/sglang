@@ -581,10 +581,21 @@ class QKVParallelLinearWithLoRA(ColumnParallelLinearWithLoRA):
         kv_start_idx = kv_proj_shard_size * kv_shard_id
         kv_end_idx = kv_start_idx + kv_proj_shard_size
 
-        q_size, k_size, _ = base_layer.output_sizes
+        # NOTE: base_layer.output_sizes bakes in TP head replication for the
+        # base model layout (e.g., for GQA models with num_kv_heads<tp_size,
+        # k_size and v_size are inflated by num_kv_head_replicas). The PEFT
+        # LoRA weight `B` we receive here is the full unsharded tensor with
+        # shape (total_num_heads*head + 2*total_num_kv_heads*head, R), NOT
+        # the TP-replicated layout. Use the unreplicated full sizes for
+        # offset arithmetic so the V slice doesn't fall off the end.
+        q_size_full = base_layer.total_num_heads * base_layer.head_size
+        k_size_full = base_layer.total_num_kv_heads * base_layer.head_size
         B_q_shard = B[q_start_idx:q_end_idx, :]
-        B_k_shard = B[q_size + kv_start_idx : q_size + kv_end_idx, :]
-        B_v_shard = B[q_size + k_size + kv_start_idx : q_size + k_size + kv_end_idx, :]
+        B_k_shard = B[q_size_full + kv_start_idx : q_size_full + kv_end_idx, :]
+        B_v_shard = B[
+            q_size_full + k_size_full + kv_start_idx :
+            q_size_full + k_size_full + kv_end_idx, :
+        ]
 
         return torch.concat(
             (
