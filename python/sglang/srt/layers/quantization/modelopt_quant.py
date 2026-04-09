@@ -1559,11 +1559,31 @@ class ModelOptNvFp4FusedMoEMethod(FusedMoEMethodBase):
     def __init__(self, quant_config: ModelOptFp4Config):
         self.quant_config = quant_config
 
-        if should_use_fp4_marlin_fallback():
-            logger.warning_once(
-                "GPU is not Blackwell (SM100+). Using Marlin FP4 fallback kernel "
-                "for MoE layers. Weights remain compressed in FP4 format."
+        # MoE LoRA only has a working code path on top of the Marlin FP4 runner
+        # in this fork (see lora_moe_runner_marlin.py). When LoRA is enabled we
+        # force the marlin fallback regardless of GPU arch — even on Blackwell —
+        # so the LoRA wrapper has a runner with a real lora-aware path to call.
+        try:
+            from sglang.srt.server_args import get_global_server_args
+
+            _lora_enabled = bool(
+                getattr(get_global_server_args(), "enable_lora", False)
             )
+        except Exception:
+            _lora_enabled = False
+
+        if should_use_fp4_marlin_fallback() or _lora_enabled:
+            if _lora_enabled and not should_use_fp4_marlin_fallback():
+                logger.warning_once(
+                    "MoE LoRA + NVFP4 detected: forcing Marlin FP4 MoE runner "
+                    "(only LoRA-capable fp4 path in this fork)."
+                )
+            else:
+                logger.warning_once(
+                    "GPU is not Blackwell (SM100+). Using Marlin FP4 fallback "
+                    "kernel for MoE layers. Weights remain compressed in FP4 "
+                    "format."
+                )
             self.use_marlin_fallback = True
             self.enable_flashinfer_trtllm_moe = False
         elif not is_blackwell_supported():
@@ -1618,8 +1638,12 @@ class ModelOptNvFp4FusedMoEMethod(FusedMoEMethodBase):
         # GEMM 1
         num_shards = 2 if layer.moe_runner_config.is_gated else 1
 
+        # Use zeros instead of empty: when intermediate_size_per_partition is
+        # padded (e.g. flashinfer/marlin alignment to 128), the trailing
+        # padding rows are not filled by the weight loader. They MUST be zero
+        # so the GEMM doesn't accumulate garbage from uninitialized memory.
         w13_weight = ModelWeightParameter(
-            data=torch.empty(
+            data=torch.zeros(
                 layer.num_local_experts,
                 num_shards * intermediate_size_per_partition,
                 # 2 fp4 items are packed in the input dimension
@@ -1634,7 +1658,7 @@ class ModelOptNvFp4FusedMoEMethod(FusedMoEMethodBase):
 
         # GEMM 2
         w2_weight = ModelWeightParameter(
-            data=torch.empty(
+            data=torch.zeros(
                 layer.num_local_experts,
                 hidden_size,
                 # 2 fp4 items are packed in the input dimension
@@ -1648,7 +1672,7 @@ class ModelOptNvFp4FusedMoEMethod(FusedMoEMethodBase):
         layer.register_parameter("w2_weight", w2_weight)
 
         w13_weight_scale = ModelWeightParameter(
-            data=torch.empty(
+            data=torch.zeros(
                 layer.num_local_experts,
                 num_shards * intermediate_size_per_partition,
                 hidden_size // self.quant_config.group_size,
@@ -1666,7 +1690,7 @@ class ModelOptNvFp4FusedMoEMethod(FusedMoEMethodBase):
         )
 
         w2_weight_scale = ModelWeightParameter(
-            data=torch.empty(
+            data=torch.zeros(
                 layer.num_local_experts,
                 hidden_size,
                 intermediate_size_per_partition // self.quant_config.group_size,
@@ -1951,6 +1975,45 @@ class ModelOptNvFp4FusedMoEMethod(FusedMoEMethodBase):
             self.runner = MoeRunner(
                 MoeRunnerBackend.FLASHINFER_TRTLLM, moe_runner_config
             )
+
+    def get_marlin_quant_info(self, layer: torch.nn.Module):
+        """Build a MarlinMoeQuantInfo for the LoRA MoE wrapper.
+
+        Mirrors the MarlinMoeQuantInfo construction in apply() so that
+        FusedMoEWithLoRA can call us once and reuse the result for the
+        marlin LoRA runner. Only valid when use_marlin_fallback is True
+        (i.e. weights have already been repacked by
+        prepare_moe_fp4_layer_for_marlin in process_weights_after_loading).
+        """
+        from sglang.srt.layers.moe.moe_runner.marlin import MarlinMoeQuantInfo
+
+        assert self.use_marlin_fallback, (
+            "get_marlin_quant_info requires use_marlin_fallback=True; "
+            "set SGLANG_FORCE_NVFP4_MARLIN=1 or run on a non-Blackwell GPU."
+        )
+
+        expert_map = None
+        global_num_experts = -1
+        if hasattr(layer, "dispatcher") and hasattr(
+            layer.dispatcher, "local_expert_mapping"
+        ):
+            expert_map = layer.dispatcher.local_expert_mapping
+            if expert_map is not None:
+                global_num_experts = self.moe_runner_config.num_experts
+
+        return MarlinMoeQuantInfo(
+            w13_qweight=layer.w13_weight,
+            w2_qweight=layer.w2_weight,
+            w13_scales=layer.w13_weight_scale,
+            w2_scales=layer.w2_weight_scale,
+            w13_g_idx_sort_indices=None,
+            w2_g_idx_sort_indices=None,
+            weight_bits=4,
+            w13_global_scale=layer.w13_weight_scale_2,
+            w2_global_scale=layer.w2_weight_scale_2,
+            expert_map=expert_map,
+            global_num_experts=global_num_experts,
+        )
 
     def apply(
         self,

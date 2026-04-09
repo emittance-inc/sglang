@@ -100,11 +100,20 @@ class MoeRunner:
             from sglang.srt.lora.lora_moe_runners import build_lora_hooks
 
             if isinstance(_runner_input, DispatchOutput):
+                topk_output = _runner_input.topk_output
+                # BypassedTopKOutput (used by flashinfer autotune dummy_run and
+                # cuda graph capture) has no topk_ids — there's no real router
+                # output to inject LoRA into, so skip the hooks. Real forward
+                # passes always have a StandardTopKOutput with topk_ids set.
+                if not hasattr(topk_output, "topk_ids"):
+                    return None
                 hidden_states, topk_ids = (
                     _runner_input.hidden_states,
-                    _runner_input.topk_output.topk_ids,
+                    topk_output.topk_ids,
                 )
             else:
+                if not hasattr(_runner_input, "topk_ids"):
+                    return None
                 hidden_states, topk_ids = (
                     _runner_input.hidden_states,
                     _runner_input.topk_ids,

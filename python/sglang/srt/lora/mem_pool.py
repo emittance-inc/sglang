@@ -189,7 +189,15 @@ class LoRAMemoryPool:
         )
         c = get_stacked_multiply(module_name)
         if self.tp_size > 1 and module_name in ROW_PARALLELISM_LINEAR_LORA_NAMES:
-            input_dim = divide(input_dim, self.tp_size)
+            if module_name == "down_proj_moe":
+                # FusedMoE may pad intermediate_size_per_partition to a multiple
+                # of 128 for the flashinfer/marlin kernels. The naive
+                # `moe_inter / tp_size` divide misses that pad and ends up
+                # smaller than what the slice path produces. Read the actual
+                # post-pad value from the base FusedMoE layer.
+                input_dim = self._get_moe_intermediate_per_rank(base_model)
+            else:
+                input_dim = divide(input_dim, self.tp_size)
 
         if self.is_moe_module(module_name):
             num_experts = self._get_num_experts(base_model)
@@ -248,6 +256,11 @@ class LoRAMemoryPool:
                 # per-rank q + 2*kv shard sizes from the base model's
                 # QKVParallelLinear layer instead.
                 output_dim = self._get_qkv_per_rank_output_dim(base_model)
+            elif module_name == "gate_up_proj_moe":
+                # FusedMoE may pad intermediate_size_per_partition to a multiple
+                # of 128 (flashinfer/marlin alignment). gate_up B output is
+                # 2 * (post-pad intermediate_per_rank).
+                output_dim = 2 * self._get_moe_intermediate_per_rank(base_model)
             else:
                 output_dim = divide(output_dim, self.tp_size)
 
@@ -260,6 +273,22 @@ class LoRAMemoryPool:
             return (self.max_loras_per_batch, expert_dim, output_dim, max_lora_dim)
         else:
             return (self.max_loras_per_batch, output_dim, max_lora_dim)
+
+    def _get_moe_intermediate_per_rank(self, base_model: torch.nn.Module) -> int:
+        """Find the first FusedMoE in `base_model` and return its
+        `intermediate_size_per_partition`. FusedMoE may pad this to a
+        multiple of 128 for flashinfer/marlin alignment, so the naive
+        `moe_intermediate_size / tp_size` divide can underestimate it.
+        """
+        from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE
+
+        for module in base_model.modules():
+            if isinstance(module, FusedMoE):
+                return module.intermediate_size_per_partition
+        raise RuntimeError(
+            "Could not find a FusedMoE layer in the base model to compute "
+            "per-rank MoE intermediate size for LoRA buffer shape."
+        )
 
     def _get_qkv_per_rank_output_dim(self, base_model: torch.nn.Module) -> int:
         """Find the first QKVParallelLinear in `base_model` and return its

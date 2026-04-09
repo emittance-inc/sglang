@@ -177,11 +177,19 @@ class BaseLoRABackend(LoRABackendLmHeadMixing):
         base = moe_layer.base_layer
         top_k = base.top_k
         qinfo = moe_layer._quant_info
-        E, N, _ = qinfo.w13_weight.shape
-        hidden_dim = qinfo.w2_weight.shape[1]
-        device = qinfo.w13_weight.device
-        dtype = compute_dtype
+        # Derive E/N/hidden_dim/device in a way that works across both
+        # TritonMoeQuantInfo (w13_weight, w2_weight) and MarlinMoeQuantInfo
+        # (w13_qweight, w2_qweight, where the on-disk shape is repacked).
+        # Prefer the base layer's logical fields when present.
         num_experts = base.num_experts
+        E = getattr(base, "num_local_experts", num_experts)
+        N = 2 * base.intermediate_size_per_partition
+        hidden_dim = base.hidden_size
+        weight_attr = (
+            qinfo.w13_weight if hasattr(qinfo, "w13_weight") else qinfo.w13_qweight
+        )
+        device = weight_attr.device
+        dtype = compute_dtype
 
         block_size_m = 64
         max_num_tokens_padded = max_bs * top_k + num_experts * (block_size_m - 1)

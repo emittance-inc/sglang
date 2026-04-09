@@ -27,6 +27,7 @@ if _is_cuda:
 
     from sglang.jit_kernel.moe_wna16_marlin import moe_wna16_marlin_gemm
     from sglang.srt.layers.moe.fused_moe_triton.fused_marlin_moe import (
+        _get_fp4_scalar_type,
         get_scalar_type,
     )
     from sglang.srt.layers.moe.fused_moe_triton.fused_moe import (
@@ -67,12 +68,32 @@ class MarlinLoraRunnerCore:
         global _MARLIN_WORKSPACE
         from sglang.srt.layers.moe.token_dispatcher.standard import StandardCombineInput
 
-        assert hooks is not None, "hooks must be provided for MarlinLoraRunnerCore"
-
         hidden_states = dispatch_output.hidden_states
         topk_output = dispatch_output.topk_output
-        topk_weights = topk_output.topk_weights
-        topk_ids = topk_output.topk_ids
+
+        # flashinfer autotune / cuda-graph capture pass a BypassedTopKOutput
+        # (no precomputed topk_weights/topk_ids — just router_logits and a
+        # topk_config). The runner needs real topk tensors to drive the marlin
+        # GEMM tile selection, so compute them on the fly here. LoRA hooks are
+        # also unavailable in this path; the dummy forward only needs to record
+        # valid CUDA ops into the graph, not produce correct LoRA outputs.
+        if not hasattr(topk_output, "topk_ids"):
+            # Run a one-shot topk on the dummy router_logits.
+            from sglang.srt.layers.moe.topk import (
+                StandardTopKOutput,
+                fused_topk_native,
+            )
+
+            tcfg = topk_output.topk_config
+            topk_weights, topk_ids = fused_topk_native(
+                hidden_states=hidden_states,
+                gating_output=topk_output.router_logits,
+                topk=tcfg.top_k,
+                renormalize=tcfg.renormalize,
+            )
+        else:
+            topk_weights = topk_output.topk_weights
+            topk_ids = topk_output.topk_ids
 
         assert runner_config.activation == "silu", "Only SiLU activation is supported."
         assert (
@@ -104,8 +125,16 @@ class MarlinLoraRunnerCore:
             )
         workspace = _MARLIN_WORKSPACE
 
-        scalar_type1 = get_scalar_type(num_bits, quant_info.w13_qzeros is not None)
-        scalar_type2 = get_scalar_type(num_bits, quant_info.w2_qzeros is not None)
+        # FP4 (NVFP4) marlin requires float4_e2m1f scalar type and a global
+        # per-tensor/per-expert scale; int4/int8 marlin uses uint4/uint8 with
+        # zero global_scale.
+        _is_fp4_marlin = quant_info.w13_global_scale is not None
+        if _is_fp4_marlin:
+            scalar_type1 = _get_fp4_scalar_type()
+            scalar_type2 = _get_fp4_scalar_type()
+        else:
+            scalar_type1 = get_scalar_type(num_bits, quant_info.w13_qzeros is not None)
+            scalar_type2 = get_scalar_type(num_bits, quant_info.w2_qzeros is not None)
 
         # Stage 1: Gate/Up (Marlin)
         intermediate_cache1 = torch.empty(
@@ -117,7 +146,7 @@ class MarlinLoraRunnerCore:
             quant_info.w13_qweight,
             None,
             quant_info.w13_scales,
-            None,
+            quant_info.w13_global_scale,
             quant_info.w13_qzeros,
             quant_info.w13_g_idx,
             quant_info.w13_g_idx_sort_indices,
@@ -141,7 +170,7 @@ class MarlinLoraRunnerCore:
         )
 
         # Hook: after gate_up
-        if hooks.after_gate_up:
+        if hooks is not None and hooks.after_gate_up:
             intermediate_cache1_3d = intermediate_cache1.view(M, topk, 2 * N)
             hooks.after_gate_up(
                 hidden_states, intermediate_cache1_3d, topk_weights, topk_ids
@@ -166,7 +195,7 @@ class MarlinLoraRunnerCore:
             quant_info.w2_qweight,
             None,
             quant_info.w2_scales,
-            None,
+            quant_info.w2_global_scale,
             quant_info.w2_qzeros,
             quant_info.w2_g_idx,
             quant_info.w2_g_idx_sort_indices,
@@ -191,7 +220,7 @@ class MarlinLoraRunnerCore:
         intermediate_cache3 = intermediate_cache3.view(M, topk, K)
 
         # Hook: after down
-        if hooks.after_down:
+        if hooks is not None and hooks.after_down:
             hooks.after_down(
                 intermediate_cache2, intermediate_cache3, topk_weights, topk_ids
             )

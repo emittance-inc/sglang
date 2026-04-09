@@ -317,7 +317,15 @@ class TopK(MultiPlatformOp):
             get_moe_runner_backend().is_flashinfer_trtllm()
             or get_moe_runner_backend().is_flashinfer_mxfp4()
         ):
-            output_format = TopKOutputFormat.BYPASSED
+            # SGLANG_FORCE_STANDARD_TOPK lets the modelopt fp4 marlin fallback
+            # path opt out of the bypassed format. The marlin runner needs a
+            # precomputed StandardTopKOutput; only flashinfer_trtllm can consume
+            # the bypassed format directly.
+            import os
+            if os.environ.get("SGLANG_FORCE_STANDARD_TOPK"):
+                output_format = TopKOutputFormat.STANDARD
+            else:
+                output_format = TopKOutputFormat.BYPASSED
         else:
             output_format = TopKOutputFormat.STANDARD
 

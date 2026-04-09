@@ -735,10 +735,22 @@ class FusedMoEWithLoRA(BaseLayerWithLoRA):
         from sglang.srt.layers.moe.moe_runner.runner import MoeRunner
         from sglang.srt.layers.moe.utils import get_moe_runner_backend
 
-        # Determine runner backend: prefer server arg, fall back to quant method's runner
+        # Determine runner backend: prefer server arg, fall back to quant method's runner.
+        # Special case: ServerArgs.__post_init__ auto-promotes moe_runner_backend from
+        # 'auto' to 'flashinfer_trtllm' for modelopt_fp4 on Blackwell. flashinfer_trtllm
+        # has no LoRA path; if the underlying quant method exposes a marlin runner
+        # (use_marlin_fallback=True), prefer it.
         global_backend = get_moe_runner_backend()
-        if not global_backend.is_auto():
+        quant_method_marlin = (
+            getattr(base_layer.quant_method, "use_marlin_fallback", False)
+            and hasattr(base_layer.quant_method, "get_marlin_quant_info")
+        )
+        if global_backend.is_flashinfer_trtllm() and quant_method_marlin:
+            runner_backend = MoeRunnerBackend.MARLIN
+        elif not global_backend.is_auto():
             runner_backend = global_backend
+        elif quant_method_marlin:
+            runner_backend = MoeRunnerBackend.MARLIN
         elif (
             hasattr(base_layer.quant_method, "runner")
             and base_layer.quant_method.runner is not None
@@ -754,15 +766,11 @@ class FusedMoEWithLoRA(BaseLayerWithLoRA):
         )
 
         if runner_backend.is_marlin():
-            from sglang.srt.layers.quantization.compressed_tensors.compressed_tensors import (
-                CompressedTensorsFusedMoEMethod,
-            )
-
-            assert isinstance(
-                base_layer.quant_method, CompressedTensorsFusedMoEMethod
-            ), (
-                f"Marlin MoE backend requires CompressedTensorsFusedMoEMethod, "
-                f"got {type(base_layer.quant_method).__name__}"
+            assert hasattr(base_layer.quant_method, "get_marlin_quant_info"), (
+                f"Marlin MoE LoRA requires the quant method to expose "
+                f"get_marlin_quant_info(), but {type(base_layer.quant_method).__name__} "
+                f"does not. Supported: CompressedTensorsFusedMoEMethod (int4/int8) "
+                f"and ModelOptNvFp4FusedMoEMethod (NVFP4 with use_marlin_fallback)."
             )
             self._quant_info = base_layer.quant_method.get_marlin_quant_info(base_layer)
         elif runner_backend.is_triton():
@@ -912,7 +920,18 @@ class FusedMoEWithLoRA(BaseLayerWithLoRA):
         shard_size = self.intermediate_size_per_partition
         start = tp_rank * shard_size
         end = start + shard_size
-        return A[..., start:end].contiguous()
+        # FusedMoE may pad intermediate_size_per_partition past the actual
+        # checkpoint width (e.g. 96 → 128 for marlin/flashinfer alignment).
+        # Slice what's available; zero-pad along the last dim so the result
+        # always matches `shard_size`. The padded tail multiplies against
+        # padded base weights (also zero in the marlin layout) so it doesn't
+        # affect the computation.
+        actual_end = min(end, A.shape[-1])
+        sliced = A[..., start:actual_end].contiguous()
+        pad_amount = shard_size - sliced.shape[-1]
+        if pad_amount > 0:
+            sliced = torch.nn.functional.pad(sliced, (0, pad_amount))
+        return sliced
 
     def slice_moe_lora_b_weights(
         self,
@@ -960,8 +979,21 @@ class FusedMoEWithLoRA(BaseLayerWithLoRA):
             start = tp_rank * shard_size
             end = start + shard_size
             full_inter = B.shape[0] // 2
-            gate_b = B[start:end, :]
-            up_b = B[full_inter + start : full_inter + end, :]
+            # FusedMoE may pad intermediate_size_per_partition past the
+            # checkpoint's intermediate (e.g. 96 → 128). Slice only what's
+            # available and zero-pad along dim 0 so each gate/up slice equals
+            # `shard_size`. The padded rows multiply against padded base
+            # weights (also zero) so they're inert.
+            gate_actual_end = min(end, full_inter)
+            up_actual_end = min(full_inter + end, B.shape[0])
+            gate_b = B[start:gate_actual_end, :]
+            up_b = B[full_inter + start : up_actual_end, :]
+            gate_pad = shard_size - gate_b.shape[0]
+            up_pad = shard_size - up_b.shape[0]
+            if gate_pad > 0:
+                gate_b = torch.nn.functional.pad(gate_b, (0, 0, 0, gate_pad))
+            if up_pad > 0:
+                up_b = torch.nn.functional.pad(up_b, (0, 0, 0, up_pad))
             if self._uses_interleaved_gate_up:
                 return torch.stack([gate_b, up_b], dim=1).reshape(-1, B.shape[-1])
             return torch.cat([gate_b, up_b], dim=0).contiguous()
