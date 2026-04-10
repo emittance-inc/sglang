@@ -735,22 +735,22 @@ class FusedMoEWithLoRA(BaseLayerWithLoRA):
         from sglang.srt.layers.moe.moe_runner.runner import MoeRunner
         from sglang.srt.layers.moe.utils import get_moe_runner_backend
 
-        # Determine runner backend: prefer server arg, fall back to quant method's runner.
-        # Special case: ServerArgs.__post_init__ auto-promotes moe_runner_backend from
-        # 'auto' to 'flashinfer_trtllm' for modelopt_fp4 on Blackwell. flashinfer_trtllm
-        # has no LoRA path; if the underlying quant method exposes a marlin runner
-        # (use_marlin_fallback=True), prefer it.
+        # Determine runner backend. The marlin fallback is mandatory for any
+        # quant method that has use_marlin_fallback=True (e.g., NVFP4 modelopt
+        # on Blackwell forced via SGLANG_FORCE_NVFP4_MARLIN, or non-Blackwell):
+        # the weights have been repacked into marlin format and ONLY the marlin
+        # runner can consume them. So this check must come BEFORE deferring to
+        # the user's --moe-runner-backend choice or to the quant method's own
+        # default runner.
         global_backend = get_moe_runner_backend()
         quant_method_marlin = (
             getattr(base_layer.quant_method, "use_marlin_fallback", False)
             and hasattr(base_layer.quant_method, "get_marlin_quant_info")
         )
-        if global_backend.is_flashinfer_trtllm() and quant_method_marlin:
+        if quant_method_marlin:
             runner_backend = MoeRunnerBackend.MARLIN
         elif not global_backend.is_auto():
             runner_backend = global_backend
-        elif quant_method_marlin:
-            runner_backend = MoeRunnerBackend.MARLIN
         elif (
             hasattr(base_layer.quant_method, "runner")
             and base_layer.quant_method.runner is not None
