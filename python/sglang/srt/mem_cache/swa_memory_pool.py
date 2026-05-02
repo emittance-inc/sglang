@@ -1,5 +1,4 @@
 import logging
-import weakref
 from typing import Dict, List, Optional, Tuple
 
 import torch
@@ -41,6 +40,7 @@ class SWAKVPool(KVCache):
         enable_kvcache_transpose: bool,
         device: str,
         token_to_kv_pool_class: KVCache = MHATokenToKVPool,
+        enable_memory_saver: bool = False,
         **kwargs,
     ):
         self.size = size
@@ -56,7 +56,7 @@ class SWAKVPool(KVCache):
         self.swa_loc = None
 
         kwargs["page_size"] = page_size
-        kwargs["enable_memory_saver"] = False
+        kwargs["enable_memory_saver"] = enable_memory_saver  # MILES PATCH: was hardcoded False, broke SWA KV tagging
         kwargs["head_num"] = head_num
         kwargs["head_dim"] = head_dim
         kwargs["device"] = device
@@ -306,7 +306,7 @@ class SWATokenToKVPoolAllocator(BaseTokenToKVPoolAllocator):
 
         self.clear()
         self._kvcache = kvcache
-        self._kvcache.register_mapping(weakref.proxy(self.full_to_swa_index_mapping))
+        self._kvcache.register_mapping(self.full_to_swa_index_mapping)
 
     def available_size(self):
         return min(
